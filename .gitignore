@@ -1,0 +1,7 @@
+.runtime/
+__pycache__/
+/.venv/
+
+# Local project references (not for version control).
+/project-requirements.html
+/README.local.md

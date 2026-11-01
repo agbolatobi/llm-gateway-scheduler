@@ -1,0 +1,27 @@
+{
+  "case": "engineering_short_64",
+  "repetitions": 8,
+  "warmup_requests": 1,
+  "memory_interval": 0.2,
+  "idle_seconds": 2,
+  "server": {
+    "ctx_size": 4096,
+    "parallel": 4,
+    "threads": 6,
+    "threads_batch": 6,
+    "batch_size": 512,
+    "ubatch_size": 128,
+    "cont_batching": true,
+    "kv_unified": false,
+    "log_verbosity": 4
+  },
+  "concurrency": [1, 2, 4],
+  "context": [4096, 8192],
+  "limits": {
+    "max_e2e_seconds": 30,
+    "max_ttft_seconds": 20,
+    "max_ram_mib": 3072,
+    "min_available_ram_mib": 768,
+    "request_timeout_seconds": 60
+  }
+}

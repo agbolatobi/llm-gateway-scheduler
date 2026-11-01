@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "frozen_at": "2026-10-28",
+  "scope": "Initial CPU scheduler comparisons; revalidate latency for mixed/long workloads",
+  "selected_concurrency": 4,
+  "case": "engineering_short_64",
+  "repetitions": 8,
+  "warmup_requests": 1,
+  "memory_interval": 0.2,
+  "idle_seconds": 2,
+  "server": {
+    "ctx_size": 8192,
+    "parallel": 4,
+    "threads": 6,
+    "threads_batch": 6,
+    "batch_size": 512,
+    "ubatch_size": 128,
+    "cont_batching": true,
+    "kv_unified": false,
+    "log_verbosity": 4
+  },
+  "request_settings": {
+    "temperature": 0,
+    "prompt_cache": "off",
+    "model_alias": "local-llm"
+  },
+  "observed_identity": {
+    "model": "Qwen2.5 1.5B Instruct Q4_K_M",
+    "model_sha256": "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+    "runtime_build": "b11669-620d2225c",
+    "runtime_binary_sha256": "3f2b53013c2eb596c8aca87e4740240a41f95bcebf72e61084d6d5ba0db761cc",
+    "hardware": "Ubuntu WSL2, Intel Core i5-1235U, 12 visible logical CPUs"
+  },
+  "concurrency": [1, 2, 4],
+  "context": [4096, 8192],
+  "limits": {
+    "max_e2e_seconds": 30,
+    "max_ttft_seconds": 20,
+    "max_ram_mib": 3072,
+    "min_available_ram_mib": 768,
+    "request_timeout_seconds": 60
+  },
+  "evidence": {
+    "concurrency": "MEAS-03.md",
+    "context": "MEAS-04.md",
+    "joint_confirmation": "artifacts/meas04-20261028-confirmation/confirmation.json"
+  }
+}

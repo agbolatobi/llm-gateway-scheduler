@@ -1,0 +1,4 @@
+# Generated benchmark inputs and reports.
+/generated/
+/artifacts/
+__pycache__/
