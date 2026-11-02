@@ -2,8 +2,8 @@
 
 Current features: a local llama.cpp server, Python chat CLI, and AIPerf
 benchmarks with JSONL, CSV and PDF reports, including sampled server RAM/VRAM
-where supported. A Go gateway API skeleton is available; inference forwarding,
-authentication, quotas, and scheduling remain planned.
+where supported. The Go gateway supports API-key management, authentication,
+and chat validation; inference forwarding, quotas, and scheduling remain planned.
 
 Run commands from the project root in Ubuntu WSL using Python 3.12.
 
@@ -109,7 +109,8 @@ environment; it does not stop the server.
 ## Gateway API skeleton
 
 See [gateway/README.md](gateway/README.md) to run the Go server on port 8000.
-Chat and model-list endpoints are placeholders; health and chat validation work.
+Chat and model-list endpoints require a Bearer API key and remain placeholders.
+Key creation, saved-key reuse, revocation, health, and chat validation work.
 The existing Python CLI and benchmarks still use llama.cpp directly on port 8080.
 
 ## Benchmarks and metrics

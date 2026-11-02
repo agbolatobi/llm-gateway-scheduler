@@ -1,10 +1,10 @@
 # Gateway and scheduling plan
 
-Gateway and scheduling plan. The [Go API skeleton](gateway/README.md) now provides health, chat validation, and placeholder endpoints. Everything else below remains planned: authentication, quota, registry, router, scheduler, and reverse-proxy modules within one service.
+Gateway and scheduling plan. The [Go gateway](gateway/README.md) provides health, chat validation, API-key creation/storage/revocation, and authentication on both API placeholders. Quotas, registry, routing, scheduling, and reverse proxying remain planned.
 
 ## Request flow
 
-1. Validate the basic request and authenticate its API key.
+1. Authenticate its API key and validate the basic request.
 2. Check user/global request limits and exhausted token budgets.
 3. Look up the requested model; validate access, tokens, and model quotas.
 4. Atomically reserve user/global/model budgets and admit the request.
@@ -28,7 +28,7 @@ Before the scheduler exists, reject work exceeding active limits.
 
 ### Local API-key reuse
 
-Save the client key in `~/.config/llm-gateway-scheduler/credentials.json`, outside the repository. Create the directory with mode `0700` and the file with mode `0600`; the client loads the key automatically across sessions. This file contains the secret, not a hash, and is not encrypted. Never log it. The gateway keeps only a verification hash; revoking a key stops it working even if the client still has it saved.
+Implemented: `credentials.json` in `~/.config/llm-gateway-scheduler/` saves client keys outside the repository (directory `0700`, file `0600`). The Python client loads the selected key only for its configured gateway origin. The server reads hashes from the separate `api-keys.json`; revocation takes effect on new requests immediately. See the [key commands and Postman setup](gateway/README.md#manage-saved-keys).
 
 ## Scheduling milestone
 

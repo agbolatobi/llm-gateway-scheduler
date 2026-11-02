@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,27 +9,59 @@ import (
 	"mime"
 	"net/http"
 	"strings"
+
+	"llm-gateway-scheduler/gateway/internal/auth"
 )
 
 const MaxBodyBytes = 1 << 20 // 1 MiB, including trailing input.
 
-// NewHandler has no runtime connection or side effects. Valid inference requests
-// return 501 until the real gateway pipeline is implemented.
-func NewHandler() http.Handler {
+type Authenticator interface {
+	Verify(string) (auth.Principal, error)
+}
+
+type principalContextKey struct{}
+
+// PrincipalFromContext makes the verified user available to later quota checks.
+func PrincipalFromContext(ctx context.Context) (auth.Principal, bool) {
+	principal, ok := ctx.Value(principalContextKey{}).(auth.Principal)
+	return principal, ok
+}
+
+// requiresAuthentication lists the routes that need an API key.
+// Add another endpoint constant to the case below to protect a new route.
+func requiresAuthentication(path string) bool {
+	switch path {
+	case ChatCompletionsPath, ModelsPath:
+		return true
+	default:
+		return false
+	}
+}
+
+// NewHandler authenticates protected routes before inspecting the request body.
+// Authorized inference requests still return 501 until inference is implemented.
+func NewHandler(verifier Authenticator) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
+		if requiresAuthentication(r.URL.Path) {
+			var ok bool
+			r, ok = authenticate(w, r, verifier)
+			if !ok {
+				return
+			}
+		}
 		switch r.URL.Path {
-		case "/health":
+		case HealthPath:
 			if !requireMethod(w, r, http.MethodGet) {
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-		case "/v1/chat/completions":
+		case ChatCompletionsPath:
 			if !requireMethod(w, r, http.MethodPost) {
 				return
 			}
 			chat(w, r)
-		case "/v1/models":
+		case ModelsPath:
 			if !requireMethod(w, r, http.MethodGet) {
 				return
 			}
@@ -37,6 +70,41 @@ func NewHandler() http.Handler {
 			writeError(w, http.StatusNotFound, "not_found", "Endpoint not found.", "")
 		}
 	})
+}
+
+func authenticate(w http.ResponseWriter, r *http.Request, verifier Authenticator) (*http.Request, bool) {
+	values := r.Header.Values("Authorization")
+	if len(values) != 1 {
+		unauthorized(w)
+		return r, false
+	}
+	parts := strings.Fields(values[0])
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		unauthorized(w)
+		return r, false
+	}
+	if verifier == nil {
+		writeError(w, http.StatusServiceUnavailable, "authentication_unavailable", "API-key verification is temporarily unavailable.", "")
+		return r, false
+	}
+	principal, err := verifier.Verify(parts[1])
+	if errors.Is(err, auth.ErrInvalidKey) {
+		unauthorized(w)
+		return r, false
+	}
+	if err != nil || principal.UserID == "" || principal.KeyID == "" {
+		writeError(w, http.StatusServiceUnavailable, "authentication_unavailable", "API-key verification is temporarily unavailable.", "")
+		return r, false
+	}
+	return r.WithContext(context.WithValue(r.Context(), principalContextKey{}, principal)), true
+}
+
+func unauthorized(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", `Bearer realm="llm-gateway"`)
+	writeJSON(w, http.StatusUnauthorized, ErrorResponse{Error: APIError{
+		Message: "A valid API key is required. Use Authorization: Bearer <api_key>.",
+		Type:    "authentication_error", Code: "invalid_api_key",
+	}})
 }
 
 func requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {

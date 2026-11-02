@@ -12,14 +12,36 @@ import (
 	"time"
 
 	"llm-gateway-scheduler/gateway/internal/api"
+	"llm-gateway-scheduler/gateway/internal/auth"
 )
 
 func main() {
-	address := flag.String("listen", "127.0.0.1:8000", "Listen address (no authentication yet; keep loopback-only)")
+	if len(os.Args) > 1 && os.Args[1] == "keys" {
+		if err := runKeys(os.Args[2:], os.Stdout, os.Stderr); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	defaultDir, err := auth.DefaultDir()
+	if err != nil {
+		log.Fatal(err)
+	}
+	address := flag.String("listen", "127.0.0.1:8000", "Listen address (local HTTP; keep loopback-only)")
+	configDir := flag.String("config-dir", defaultDir, "Directory containing api-keys.json")
 	flag.Parse()
+	if flag.NArg() != 0 {
+		log.Fatal("unexpected positional arguments")
+	}
+	keyStore, err := auth.Open(*configDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if _, err := keyStore.List(); err != nil {
+		log.Fatal(err)
+	}
 	server := &http.Server{
 		Addr:              *address,
-		Handler:           api.NewHandler(),
+		Handler:           api.NewHandler(keyStore),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second,
@@ -30,7 +52,7 @@ func main() {
 	defer stop()
 	errorsCh := make(chan error, 1)
 	go func() {
-		log.Printf("Gateway API skeleton listening on %s (no inference or authentication)", *address)
+		log.Printf("Gateway listening on %s (API keys required; inference is a placeholder)", *address)
 		errorsCh <- server.ListenAndServe()
 	}()
 	select {

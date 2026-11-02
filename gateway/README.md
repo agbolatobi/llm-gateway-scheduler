@@ -1,78 +1,154 @@
-# Gateway API skeleton
+# Gateway API
 
-Go standard library only; Go 1.22+. No model calls or credentials are needed.
-This implements a **text-only Chat Completions schema subset**, not the entire
-OpenAI API. Authentication, key storage, quotas, routing, and scheduling remain planned.
+Go 1.22+ and the standard library. Local key administration runs on Linux/WSL.
+Health, API-key authentication, and chat validation work. Inference, model listing,
+quotas, routing, and scheduling are still placeholders.
 
-## Run
+## Create a key and start
 
-From the project root in WSL, with Go installed:
-
-```bash
-cd gateway
-go run ./cmd/server
-```
-
-Default: `http://127.0.0.1:8000`. Use `-listen 127.0.0.1:8001` to change it.
-Keep it loopback-only: there is no authentication yet. Ctrl+C stops the gateway;
-it does not start or stop llama.cpp on port 8080. No Python virtualenv is needed.
-
-If using the Linux executable built for this workspace instead of installing Go:
+From the project root in WSL:
 
 ```bash
-# From the project root; rebuild after code changes.
+cd ~/ai-projects/llm-gateway-scheduler
+./.runtime/gateway keys create --user tobia
 ./.runtime/gateway
 ```
 
-## Endpoints
+If an older gateway is running on port 8000, stop it with Ctrl+C in its terminal
+first. The rebuilt executable takes effect after restarting that process.
+Default address: `http://127.0.0.1:8000`; change it with
+`-listen 127.0.0.1:8001`. Keep this HTTP service on loopback.
 
-| Endpoint | Current behavior |
-| --- | --- |
-| `GET /health` | `200 {"status":"ok"}`; gateway liveness only, not model readiness |
-| `POST /v1/chat/completions` | Validates the request, then returns `501 not_implemented` |
-| `GET /v1/models` | Returns `501 not_implemented`; no registry yet |
+With Go installed inside WSL, use `go run ./cmd/server` from `gateway/`
+instead of `./.runtime/gateway`; the same arguments apply.
+
+## Manage saved keys
 
 ```bash
-curl http://127.0.0.1:8000/health
-
-curl -i http://127.0.0.1:8000/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"local-llm","messages":[{"role":"user","content":"Explain prefill."}],"max_completion_tokens":64,"stream":false}'
+./.runtime/gateway keys list
+./.runtime/gateway keys show
+./.runtime/gateway keys use --id KEY_ID
+./.runtime/gateway keys revoke --id KEY_ID
 ```
 
-The chat request above deliberately returns:
+- `create --user USER_ID` generates a random key, saves it, selects it, and prints
+  the complete key on the `API token:` line for copying into Postman.
+- `list` shows IDs, users, and status; it does not reveal keys or hashes.
+- `show` prints the selected secret for copying into Postman. Use `--id KEY_ID`
+  to show another saved, active key.
+- `use` selects an existing key for automatic client reuse.
+- `revoke` rejects that key on subsequent requests without restarting the gateway.
+  It does not cancel requests already authenticated. Other keys for that user remain active.
+
+Files live outside the repository in `~/.config/llm-gateway-scheduler/`:
+
+| File | Contents |
+| --- | --- |
+| `api-keys.json` | Server verification hashes, key IDs, user IDs, creation dates, revocation status |
+| `credentials.json` | Reusable client secrets, gateway origins, and selected key |
+
+The directory is created with mode `0700`; files use `0600`. Client secrets
+are not encrypted. The `create` and `show` commands print the full token. Server
+verification never reads `credentials.json`. Writes are atomic and local
+administration commands share a process lock.
+
+For a different gateway port, create the key with
+`--base-url http://127.0.0.1:8001`. All key commands and the server accept
+`--config-dir PATH`; use the same directory for both.
+
+## Test with Postman
+
+Set `base_url` to `http://127.0.0.1:8000`. Copy the token from the `API token:`
+line after creation (without the label), or use the output of `keys show`,
+into a local secret variable named `api_key`. For both protected endpoints,
+choose **Authorization → Bearer Token** and enter `{{api_key}}`.
+The resulting header is `Authorization: Bearer <api_key>`.
+
+| Endpoint | Authentication | Current response |
+| --- | --- | --- |
+| `GET /health` | None | `200 {"status":"ok"}`; gateway liveness only |
+| `GET /v1/models` | Bearer key | `501 not_implemented` after authentication |
+| `POST /v1/chat/completions` | Bearer key | Validates input, then returns `501 not_implemented` |
+
+For chat, choose **Body → raw → JSON** and use `Content-Type: application/json`:
 
 ```json
-{"error":{"message":"Chat inference is not implemented. This endpoint validates requests only.","type":"server_error","param":null,"code":"not_implemented"}}
+{
+  "model": "local-llm",
+  "messages": [{"role": "user", "content": "Explain prefill."}],
+  "max_completion_tokens": 64,
+  "stream": false
+}
 ```
 
-Accepted fields:
+Missing, invalid, and revoked keys receive `401`:
 
-- Required: non-empty `model`, non-empty `messages` with text `content` and a
-  `system`, `developer`, `user`, or `assistant` role; optional message `name`.
-- Optional: positive `max_completion_tokens` **or** legacy `max_tokens`,
-  `temperature` (0–2), `stream`, and `stream_options.include_usage` when streaming.
-- Gateway extension: `request_class` (`interactive` or `background`); not scheduled yet.
+```json
+{
+  "error": {
+    "message": "A valid API key is required. Use Authorization: Bearer <api_key>.",
+    "type": "authentication_error",
+    "param": null,
+    "code": "invalid_api_key"
+  }
+}
+```
 
-Unknown fields, tools, multimodal content, conflicting caps, malformed JSON,
-and multiple JSON objects are rejected. Body limit: 1 MiB. Error responses are
-JSON: `400` invalid input, `413` too large, `415` unsupported content type/encoding,
-`404` unknown route, `405` wrong method. Even `stream: true` returns a JSON `501`,
-not a fabricated SSE stream. Model IDs and context budgets are not checked yet.
+A valid key reaches the existing `501` placeholder. Authentication happens
+before reading the chat body. Query-string keys and duplicate Authorization
+headers are rejected. A broken/unreadable key store returns `503` and never
+grants access.
 
-## Code and tests
+## Python client reuse
 
-- `cmd/server/main.go`: startup, HTTP timeouts, graceful shutdown.
-- `internal/api/schema.go`: request, completion, chunk, usage, and error types.
-- `internal/api/server.go`: routes and validation; no backend connection.
+The existing client automatically loads the selected key for its saved gateway
+origin; it does not send that key to llama.cpp on port 8080 or other servers.
 
 ```bash
-cd gateway  # From the project root.
-go test ./...
-go vet ./...
-go build -o ../.runtime/gateway ./cmd/server
+.venv/bin/python cli.py --base-url http://127.0.0.1:8000 "Explain prefill."
 ```
 
-Schema references: [Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)
-and [streaming chunks](https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events).
-Project plan: [gateway requirements](../README.gateway.md).
+This currently reports the gateway's `501` inference placeholder. Start the Go
+gateway separately; `--start-server` is the llama.cpp launcher. For a custom
+credentials location, set `LLM_GATEWAY_CREDENTIALS` to the credentials file.
+Authenticated requests do not follow redirects.
+
+## Supported chat fields
+
+This is a text-only Chat Completions subset:
+
+- Required: non-empty `model` and `messages`; each message needs a text
+  `content` and role `system`, `developer`, `user`, or `assistant`.
+  Message `name` is optional.
+- Optional: positive `max_completion_tokens` **or** legacy `max_tokens`,
+  `temperature` (0–2), `stream`, and `stream_options.include_usage` when streaming.
+- Gateway extension: `request_class` (`interactive` or `background`).
+
+Unknown fields, tools, multimodal content, conflicting caps, and malformed JSON
+return `400`. Other errors: `413` body over 1 MiB, `415` unsupported content
+type/encoding, `404` unknown route, `405` wrong method after authentication.
+Even streaming requests return JSON `501` for now. Model IDs and context
+budgets are not checked yet.
+
+## Build and test
+
+With Go installed inside WSL, from the project root:
+
+```bash
+cd gateway
+go test ./...
+go vet ./...
+go build -o ../.runtime/gateway-next ./cmd/server
+mv ../.runtime/gateway-next ../.runtime/gateway
+```
+
+Restart an existing gateway after rebuilding. Key files survive restarts.
+
+- `cmd/server/`: HTTP startup and local key commands.
+- `internal/api/`: schemas, authentication middleware, routes, validation.
+- `internal/auth/`: key generation, persistence, verification, revocation.
+- `../client/auth.py`: origin-scoped client key loading.
+
+References: [Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create),
+[streaming chunks](https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events),
+[project plan](../README.gateway.md).

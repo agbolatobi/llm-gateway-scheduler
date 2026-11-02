@@ -6,9 +6,20 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"llm-gateway-scheduler/gateway/internal/auth"
 )
 
 const validBody = `{"model":"local-llm","messages":[{"role":"user","content":"Hello"}]}`
+
+type testVerifier struct{}
+
+func (testVerifier) Verify(token string) (auth.Principal, error) {
+	if token != "test-key" {
+		return auth.Principal{}, auth.ErrInvalidKey
+	}
+	return auth.Principal{KeyID: "test-id", UserID: "test-user"}, nil
+}
 
 func TestEndpoints(t *testing.T) {
 	tests := []struct {
@@ -60,8 +71,9 @@ func TestEndpoints(t *testing.T) {
 			}
 			request := httptest.NewRequest(method, path, strings.NewReader(test.body))
 			request.Header.Set("Content-Type", test.contentType)
+			request.Header.Set("Authorization", "Bearer test-key")
 			response := httptest.NewRecorder()
-			NewHandler().ServeHTTP(response, request)
+			NewHandler(testVerifier{}).ServeHTTP(response, request)
 			if response.Code != test.status {
 				t.Fatalf("status = %d, want %d: %s", response.Code, test.status, response.Body)
 			}
@@ -99,8 +111,9 @@ func TestSupportedOptionsRemainStubs(t *testing.T) {
 				body := `{"model":"local-llm","messages":[{"role":"` + role + `","content":"","name":"demo"}],"` + cap + `":64,"temperature":0,"stream":true,"stream_options":{"include_usage":true},"request_class":"background"}`
 				request := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
 				request.Header.Set("Content-Type", "application/json; charset=utf-8")
+				request.Header.Set("Authorization", "Bearer test-key")
 				response := httptest.NewRecorder()
-				NewHandler().ServeHTTP(response, request)
+				NewHandler(testVerifier{}).ServeHTTP(response, request)
 				if response.Code != http.StatusNotImplemented || strings.Contains(response.Body.String(), "[DONE]") {
 					t.Fatalf("stub must not fabricate a stream: %d %s", response.Code, response.Body)
 				}
@@ -113,8 +126,9 @@ func TestCompressedBodyRejected(t *testing.T) {
 	request := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(validBody))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Content-Encoding", "gzip")
+	request.Header.Set("Authorization", "Bearer test-key")
 	response := httptest.NewRecorder()
-	NewHandler().ServeHTTP(response, request)
+	NewHandler(testVerifier{}).ServeHTTP(response, request)
 	if response.Code != http.StatusUnsupportedMediaType {
 		t.Fatal(response.Code)
 	}

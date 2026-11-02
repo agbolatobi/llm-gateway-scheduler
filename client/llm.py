@@ -2,6 +2,8 @@ import json
 
 import requests
 
+from .auth import saved_api_key
+
 
 class LLMClient:
     def __init__(
@@ -16,6 +18,13 @@ class LLMClient:
 
     def _request(self, messages, *, stream, **options):
         """Send a request; the caller closes the returned response."""
+        token = saved_api_key(self.base_url)
+        authentication = {}
+        if token:
+            authentication = {
+                "headers": {"Authorization": f"Bearer {token}"},
+                "allow_redirects": False,
+            }
         return requests.post(
             f"{self.base_url}/v1/chat/completions",
             json={
@@ -26,6 +35,7 @@ class LLMClient:
             },
             stream=stream,
             timeout=self.timeout,
+            **authentication,
         )
 
     def chat(self, messages, **options):
