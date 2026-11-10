@@ -28,7 +28,7 @@ func TestAuthenticationOnBothEndpoints(t *testing.T) {
 		t.Fatal(err)
 	}
 	token, _ := store.Show("")
-	handler := NewHandler(store)
+	handler := testHandler(store)
 	for _, endpoint := range []struct{ method, path string }{{"POST", "/v1/chat/completions"}, {"GET", "/v1/models"}} {
 		t.Run(endpoint.path, func(t *testing.T) {
 			for _, header := range []string{"", "Basic " + token, "Bearer wrong", "Bearer", "Bearer " + token + " extra"} {
@@ -105,7 +105,7 @@ func TestUnavailableVerifierFailsClosed(t *testing.T) {
 		request := httptest.NewRequest("GET", "/v1/models", nil)
 		request.Header.Set("Authorization", "Bearer value")
 		response := httptest.NewRecorder()
-		NewHandler(verifier).ServeHTTP(response, request)
+		testHandler(verifier).ServeHTTP(response, request)
 		if response.Code != 503 || strings.Contains(response.Body.String(), "sensitive") {
 			t.Fatal("verifier failure must be sanitized and fail closed")
 		}
@@ -124,7 +124,7 @@ func TestUnavailableVerifierFailsClosed(t *testing.T) {
 	request := httptest.NewRequest("GET", "/v1/models", nil)
 	request.Header.Set("Authorization", "Bearer "+token)
 	response := httptest.NewRecorder()
-	NewHandler(store).ServeHTTP(response, request)
+	testHandler(store).ServeHTTP(response, request)
 	if response.Code != 503 {
 		t.Fatal("corrupt store must not allow access")
 	}

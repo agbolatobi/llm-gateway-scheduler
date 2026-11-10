@@ -23,7 +23,7 @@ type StreamOptions struct {
 	IncludeUsage bool `json:"include_usage,omitempty"`
 }
 
-// Completion and Chunk describe future successful responses, not dummy output.
+// Completion and Chunk describe the supported text-only backend response shapes.
 type Completion struct {
 	ID      string   `json:"id"`
 	Object  string   `json:"object"` // chat.completion

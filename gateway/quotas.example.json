@@ -1,0 +1,9 @@
+{
+  "request_window_seconds": 60,
+  "token_window_seconds": 3600,
+  "user": {"requests": 20, "tokens": 40000},
+  "global_ceiling": {"requests": 60, "tokens": 200000},
+  "models": [
+    {"id": "local-llm", "aliases": ["default"], "limits": {"requests": 30, "tokens": 100000}}
+  ]
+}

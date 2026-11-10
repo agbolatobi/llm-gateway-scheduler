@@ -8,9 +8,18 @@ import (
 	"testing"
 
 	"llm-gateway-scheduler/gateway/internal/auth"
+	"llm-gateway-scheduler/gateway/internal/quota"
 )
 
 const validBody = `{"model":"local-llm","messages":[{"role":"user","content":"Hello"}]}`
+
+func testHandler(verifier Authenticator) http.Handler {
+	m, err := quota.New(quota.DefaultConfig(), nil)
+	if err != nil {
+		panic(err)
+	}
+	return NewHandler(verifier, m)
+}
 
 type testVerifier struct{}
 
@@ -73,7 +82,7 @@ func TestEndpoints(t *testing.T) {
 			request.Header.Set("Content-Type", test.contentType)
 			request.Header.Set("Authorization", "Bearer test-key")
 			response := httptest.NewRecorder()
-			NewHandler(testVerifier{}).ServeHTTP(response, request)
+			testHandler(testVerifier{}).ServeHTTP(response, request)
 			if response.Code != test.status {
 				t.Fatalf("status = %d, want %d: %s", response.Code, test.status, response.Body)
 			}
@@ -113,7 +122,7 @@ func TestSupportedOptionsRemainStubs(t *testing.T) {
 				request.Header.Set("Content-Type", "application/json; charset=utf-8")
 				request.Header.Set("Authorization", "Bearer test-key")
 				response := httptest.NewRecorder()
-				NewHandler(testVerifier{}).ServeHTTP(response, request)
+				testHandler(testVerifier{}).ServeHTTP(response, request)
 				if response.Code != http.StatusNotImplemented || strings.Contains(response.Body.String(), "[DONE]") {
 					t.Fatalf("stub must not fabricate a stream: %d %s", response.Code, response.Body)
 				}
@@ -128,7 +137,7 @@ func TestCompressedBodyRejected(t *testing.T) {
 	request.Header.Set("Content-Encoding", "gzip")
 	request.Header.Set("Authorization", "Bearer test-key")
 	response := httptest.NewRecorder()
-	NewHandler(testVerifier{}).ServeHTTP(response, request)
+	testHandler(testVerifier{}).ServeHTTP(response, request)
 	if response.Code != http.StatusUnsupportedMediaType {
 		t.Fatal(response.Code)
 	}

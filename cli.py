@@ -10,6 +10,10 @@ from client.server import ensure_server_ready
 
 
 def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if len(argv) > 1 and argv[0] == "models" and argv[1] in {"list", "validate", "status", "check", "start", "stop", "--help", "-h"}:
+        from client.models import main as models_main
+        return models_main(argv[1:])
     parser = argparse.ArgumentParser(
         description="Chat with your local inference server."
     )
@@ -19,6 +23,7 @@ def main(argv=None):
     parser.add_argument("--temperature", type=float, default=0)
     parser.add_argument("--base-url", default="http://127.0.0.1:8080")
     parser.add_argument("--model", default="local-llm")
+    parser.add_argument("--config", help="Shared config for registration warnings; does not change the direct chat URL")
     startup = parser.add_argument_group("New server settings (do not reconfigure a reused server)")
     for flag in ("ctx-size", "parallel", "threads", "threads-batch", "batch-size", "ubatch-size"):
         startup.add_argument("--" + flag, type=int)
@@ -67,6 +72,16 @@ def main(argv=None):
     }
 
     try:
+        from client.model_config import DEFAULT_CONFIG, ModelConfig
+        from client.models import registration_warning
+        config_path = args.config or DEFAULT_CONFIG
+        if args.config or DEFAULT_CONFIG.exists():
+            config = ModelConfig(config_path)
+            warning = registration_warning(config, args.base_url, args.model)
+            if warning:
+                print(warning, file=sys.stderr)
+        if args.start_server and args.config:
+            raise ValueError("Use 'models start MODEL --config PATH' for configured model launches; legacy --start-server keeps the fixed default model")
         if args.start_server:
             print("Checking local model readiness...", file=sys.stderr)
             log_path = ensure_server_ready(

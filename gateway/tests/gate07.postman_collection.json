@@ -1,0 +1,843 @@
+{
+  "info": {
+    "name": "Gateway tests — reusable",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "One test server, saved URL and key. Use Run all tests for automatic checks, or send requests in Manual requests individually. Import the generated collection and reusable environment from .runtime/gate07-lab. Manual hold/cancellation steps require multiple tabs; do not run the entire manual folder in Collection Runner."
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{gateway_test_key}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "gateway_test_url",
+      "value": "http://127.0.0.1:8005",
+      "type": "string"
+    },
+    {
+      "key": "gateway_test_key",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Where are my test files?",
+      "request": {
+        "method": "GET",
+        "url": "{{gateway_test_url}}/tests/status"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Test server is reachable\", () => pm.response.to.have.status(200));",
+              "pm.test(\"Current file locations are available\", () => { const files=pm.response.json().files; pm.expect(files.postman_collection).to.be.a(\"string\"); pm.expect(files.test_cases).to.be.a(\"string\"); pm.expect(files.latest_report).to.be.a(\"string\"); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Run all tests — safe to repeat",
+      "request": {
+        "method": "POST",
+        "url": "{{gateway_test_url}}/tests/run",
+        "description": "Resets private test state automatically, then tests the real Go gateway against controlled fake backends. No model weights or normal gateway are touched. Wait for the JSON report (usually several seconds)."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const report = pm.response.json();",
+              "pm.test(\"Entire suite passed\", () => { pm.response.to.have.status(200); pm.expect(report.status).to.equal(\"passed\"); pm.expect(report.checks).to.be.an(\"array\").that.is.not.empty; });",
+              "for (const check of report.checks || []) { pm.test(check.name, () => pm.expect(check.passed).to.equal(true)); }",
+              "pm.test(\"Report saved locally\", () => pm.expect(report.files.latest_report).to.be.a(\"string\"));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Reset test state — optional",
+      "request": {
+        "method": "POST",
+        "url": "{{gateway_test_url}}/tests/reset",
+        "description": "Clears the private gateway's quotas and test state while retaining the same public URL, API key and collection. Run all tests already does this automatically."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Reset succeeded\", () => { pm.response.to.have.status(200); pm.expect(pm.response.json().status).to.equal(\"reset\"); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Manual requests — send individually",
+      "description": "Reset before each scenario. State persists between requests. All routes use the same URL/key. Controls are test-only.",
+      "item": [
+        {
+          "name": "Reset before a manual scenario",
+          "request": {
+            "method": "POST",
+            "url": "{{gateway_test_url}}/tests/reset",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List registered models",
+          "request": {
+            "method": "GET",
+            "url": "{{gateway_test_url}}/v1/models",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Token budget — run in order after reset",
+          "item": [
+            {
+              "name": "1. Chat — actual usage charged",
+              "request": {
+                "method": "POST",
+                "url": "{{gateway_test_url}}/v1/chat/completions",
+                "description": "",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"local-llm\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 128,\n  \"stream\": false\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "header": [
+                  {
+                    "key": "X-Test-User",
+                    "value": "actual"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ]
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Expected HTTP 200\", () => pm.response.to.have.status(200));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "2. Chat — refunded budget reused",
+              "request": {
+                "method": "POST",
+                "url": "{{gateway_test_url}}/v1/chat/completions",
+                "description": "",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"local-llm\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 128,\n  \"stream\": false\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "header": [
+                  {
+                    "key": "X-Test-User",
+                    "value": "actual"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ]
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Expected HTTP 200\", () => pm.response.to.have.status(200));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "3. Chat — budget exhausted",
+              "request": {
+                "method": "POST",
+                "url": "{{gateway_test_url}}/v1/chat/completions",
+                "description": "",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"local-llm\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 128,\n  \"stream\": false\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "header": [
+                  {
+                    "key": "X-Test-User",
+                    "value": "actual"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ]
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Expected HTTP 429\", () => pm.response.to.have.status(429));"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "Streaming chat with usage",
+          "request": {
+            "method": "POST",
+            "url": "{{gateway_test_url}}/v1/chat/completions",
+            "description": "Normal mode: observe SSE data, final usage, then [DONE].",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"local-llm\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "header": [
+              {
+                "key": "X-Test-User",
+                "value": "stream"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Backend controls",
+          "item": [
+            {
+              "name": "Mode: normal",
+              "request": {
+                "method": "POST",
+                "url": "{{gateway_test_url}}/__test/control",
+                "description": "Normal replies; also releases a held or stubborn backend. Select model second to control the other runtime.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"local-llm\",\n  \"mode\": \"normal\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ]
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Expected HTTP 200\", () => pm.response.to.have.status(200));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Mode: missing_usage",
+              "request": {
+                "method": "POST",
+                "url": "{{gateway_test_url}}/__test/control",
+                "description": "Replies omit token usage. Gateway should conservatively charge the reserved tokens.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"local-llm\",\n  \"mode\": \"missing_usage\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ]
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Expected HTTP 200\", () => pm.response.to.have.status(200));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Mode: invalid_usage",
+              "request": {
+                "method": "POST",
+                "url": "{{gateway_test_url}}/__test/control",
+                "description": "Replies contain an inconsistent total. Gateway should use fallback accounting.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"local-llm\",\n  \"mode\": \"invalid_usage\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ]
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Expected HTTP 200\", () => pm.response.to.have.status(200));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Mode: hold",
+              "request": {
+                "method": "POST",
+                "url": "{{gateway_test_url}}/__test/control",
+                "description": "Stream stays open with heartbeats. Send a held stream in one tab and another chat in a second tab.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"local-llm\",\n  \"mode\": \"hold\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ]
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Expected HTTP 200\", () => pm.response.to.have.status(200));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Mode: stubborn",
+              "request": {
+                "method": "POST",
+                "url": "{{gateway_test_url}}/__test/control",
+                "description": "Backend stays busy after cancellation. Cancel the stream, inspect logs, then choose normal to release it.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"local-llm\",\n  \"mode\": \"stubborn\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ]
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Expected HTTP 200\", () => pm.response.to.have.status(200));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Mode: stall",
+              "request": {
+                "method": "POST",
+                "url": "{{gateway_test_url}}/__test/control",
+                "description": "Stream starts then stalls. Gateway should emit backend_idle_timeout without [DONE]; choose normal afterward.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"local-llm\",\n  \"mode\": \"stall\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ]
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"Expected HTTP 200\", () => pm.response.to.have.status(200));"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "Chat with missing or invalid usage",
+          "request": {
+            "method": "POST",
+            "url": "{{gateway_test_url}}/v1/chat/completions",
+            "description": "Reset, select missing_usage or invalid_usage, send once, then inspect settlement logs.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"local-llm\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 128,\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "header": [
+              {
+                "key": "X-Test-User",
+                "value": "fallback"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Hold stream — keep this tab open",
+          "request": {
+            "method": "POST",
+            "url": "{{gateway_test_url}}/v1/chat/completions",
+            "description": "Reset, set hold mode, send this request. While it streams, send either busy request in another tab. Cancel or set normal to finish.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"local-llm\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "header": [
+              {
+                "key": "X-Test-User",
+                "value": "busy"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Busy request — same runtime",
+          "request": {
+            "method": "POST",
+            "url": "{{gateway_test_url}}/v1/chat/completions",
+            "description": "Send while Hold stream is active. Expect capacity_exceeded.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"local-llm\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "header": [
+              {
+                "key": "X-Test-User",
+                "value": "busy"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP 503\", () => pm.response.to.have.status(503));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Busy request — other model",
+          "request": {
+            "method": "POST",
+            "url": "{{gateway_test_url}}/v1/chat/completions",
+            "description": "Send while Hold stream is active. Expect global capacity_exceeded.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"second\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "header": [
+              {
+                "key": "X-Test-User",
+                "value": "busy"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP 503\", () => pm.response.to.have.status(503));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cancel stream — click Cancel after first event",
+          "request": {
+            "method": "POST",
+            "url": "{{gateway_test_url}}/v1/chat/completions",
+            "description": "Reset, set stubborn mode, send then Cancel. Inspect state and logs; choose normal to release the backend.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"local-llm\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "header": [
+              {
+                "key": "X-Test-User",
+                "value": "cancel"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "After cancellation — runtime quarantined",
+          "request": {
+            "method": "POST",
+            "url": "{{gateway_test_url}}/v1/chat/completions",
+            "description": "After cancelling a stubborn stream and waiting for cleanup, expect capacity_unconfirmed. Choose normal before recovery.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"local-llm\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "header": [
+              {
+                "key": "X-Test-User",
+                "value": "cancel"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP 503\", () => pm.response.to.have.status(503));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Timeout stream",
+          "request": {
+            "method": "POST",
+            "url": "{{gateway_test_url}}/v1/chat/completions",
+            "description": "Reset, set stall mode, send. Expect an SSE backend_idle_timeout and no [DONE]. Choose normal afterward.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"local-llm\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "header": [
+              {
+                "key": "X-Test-User",
+                "value": "timeout"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Recovery chat",
+          "request": {
+            "method": "POST",
+            "url": "{{gateway_test_url}}/v1/chat/completions",
+            "description": "After releasing a stubborn runtime with normal mode, expect 200.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"local-llm\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "header": [
+              {
+                "key": "X-Test-User",
+                "value": "cancel"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Inspect backend state",
+          "request": {
+            "method": "GET",
+            "url": "{{gateway_test_url}}/__test/state",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Inspect request settlement logs",
+          "request": {
+            "method": "GET",
+            "url": "{{gateway_test_url}}/tests/requests",
+            "description": "Last 50 gateway_request records. Match X-Request-ID to inspect charges, usage source and capacity state."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

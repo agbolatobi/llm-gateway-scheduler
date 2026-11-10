@@ -121,7 +121,8 @@ def _stop_owned_process(process):
 
 
 def ensure_server_ready(base_url, *, model="local-llm", timeout=120,
-                        server_options=None, on_start=None):
+                        server_options=None, on_start=None, model_file=None,
+                        server_binary=None, device="none", verify_ready=None):
     """Return the log path if started, or None if an existing server was reused.
 
     Successfully started servers persist after the CLI exits. A failed or
@@ -132,6 +133,8 @@ def ensure_server_ready(base_url, *, model="local-llm", timeout=120,
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("Startup timeout must be a positive, finite number.")
     address, port = _local_address(base_url)
+    binary = Path(server_binary) if server_binary is not None else SERVER_BINARY
+    weights = Path(model_file) if model_file is not None else MODEL_FILE
     extra_options = launch_options(server_options)
     deadline = time.monotonic() + timeout
     process = None
@@ -140,6 +143,8 @@ def ensure_server_ready(base_url, *, model="local-llm", timeout=120,
     with requests.Session() as session:
         session.trust_env = False  # Local readiness checks must not use a proxy.
         if _health(session, address, deadline) == "ready":
+            if verify_ready is not None:
+                verify_ready()
             return None
 
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -164,17 +169,19 @@ def ensure_server_ready(base_url, *, model="local-llm", timeout=120,
                         )
                     state = _health(session, address, deadline)
                     if state == "ready":
+                        if verify_ready is not None:
+                            verify_ready()
                         return log_path if process is not None else None
 
                     if state == "missing" and process is None:
-                        if not SERVER_BINARY.is_file():
-                            raise RuntimeError(f"Server executable not found: {SERVER_BINARY}")
-                        if not MODEL_FILE.is_file():
-                            raise RuntimeError(f"Model file not found: {MODEL_FILE}")
+                        if not binary.is_file():
+                            raise RuntimeError(f"Server executable not found: {binary}")
+                        if not weights.is_file():
+                            raise RuntimeError(f"Model file not found: {weights}")
                         command = [
-                            str(SERVER_BINARY), "--model", str(MODEL_FILE),
+                            str(binary), "--model", str(weights),
                             "--alias", model, "--host", "127.0.0.1",
-                            "--port", str(port), "--device", "none", *extra_options,
+                            "--port", str(port), "--device", device, *extra_options,
                         ]
                         with log_path.open("ab") as log:
                             process = subprocess.Popen(

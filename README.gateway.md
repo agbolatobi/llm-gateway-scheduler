@@ -1,15 +1,18 @@
 # Gateway and scheduling plan
 
-Gateway and scheduling plan. The [Go gateway](gateway/README.md) provides health, chat validation, API-key creation/storage/revocation, and authentication on both API placeholders. Quotas, registry, routing, scheduling, and reverse proxying remain planned.
+The [Go gateway](gateway/README.md) provides health, authentication, a model registry, tokenizer-based budgets, quotas, JSON/SSE forwarding, actual usage settlement, and execution limits. [Model commands](README.models.md) manage registered runtimes. Quota allowances scale with model registrations; execution capacity has explicit limits. Queueing remains planned.
+
+[GATE-05 routing](gateway/README.routing.md) and [GATE-06 response delivery](gateway/README.streaming.md)
+are connected to the public API. Failure and streaming tests use fake backends.
 
 ## Request flow
 
 1. Authenticate its API key and validate the basic request.
 2. Check user/global request limits and exhausted token budgets.
-3. Look up the requested model; validate access, tokens, and model quotas.
+3. Look up the requested model; validate tokens and model quotas. Any valid API key can use any registered model.
 4. Atomically reserve user/global/model budgets and admit the request.
 5. Route to an eligible backend.
-6. Queue until execution slots are available, then proxy the response.
+6. Acquire execution capacity or reject busy work, then proxy the response. Queueing comes next.
 7. Settle usage and release resources safely on every exit path.
 
 Exact token reservations require the model's tokenizer and chat template. Early quota checks still happen **before model lookup**.
@@ -19,12 +22,12 @@ Exact token reservations require the model's tokenizer and chat template. Early 
 - **GATE-01:** Define a small OpenAI-shaped chat API and health endpoint.
 - **GATE-02:** Issue, save, verify, and revoke user-linked API keys; the gateway stores only hashes.
 - **GATE-03:** Check user/global quotas before model lookup.
-- **GATE-04:** Register models, validate requests, and reserve quota budgets.
+- **GATE-04:** Share model/quota configuration; manage model processes explicitly; validate identity and token budgets; warn about unregistered servers without auto-registering them.
 - **GATE-05:** Route each model to a healthy, configured backend.
 - **GATE-06:** Proxy replies and streams; record timings and handle failures.
 - **GATE-07:** Enforce active limits, cancel safely, settle usage, and log outcomes.
 
-Before the scheduler exists, reject work exceeding active limits.
+Busy work is rejected before dispatch. See [GATE-07 lifecycle and Postman tests](gateway/README.lifecycle.md).
 
 ### Local API-key reuse
 

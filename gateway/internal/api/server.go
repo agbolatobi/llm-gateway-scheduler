@@ -40,7 +40,14 @@ func requiresAuthentication(path string) bool {
 
 // NewHandler authenticates protected routes before inspecting the request body.
 // Authorized inference requests still return 501 until inference is implemented.
-func NewHandler(verifier Authenticator) http.Handler {
+func NewHandler(verifier Authenticator, quotas QuotaChecker) http.Handler {
+	return newHandler(verifier, quotas, inferenceNotImplemented)
+}
+
+// afterQuota is the boundary for future model lookup/admission/routing.
+type chatHandler func(http.ResponseWriter, *http.Request, ChatRequest)
+
+func newHandler(verifier Authenticator, quotas QuotaChecker, afterQuota chatHandler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		if requiresAuthentication(r.URL.Path) {
@@ -60,7 +67,7 @@ func NewHandler(verifier Authenticator) http.Handler {
 			if !requireMethod(w, r, http.MethodPost) {
 				return
 			}
-			chat(w, r)
+			chat(w, r, quotas, afterQuota)
 		case ModelsPath:
 			if !requireMethod(w, r, http.MethodGet) {
 				return
@@ -96,6 +103,9 @@ func authenticate(w http.ResponseWriter, r *http.Request, verifier Authenticator
 		writeError(w, http.StatusServiceUnavailable, "authentication_unavailable", "API-key verification is temporarily unavailable.", "")
 		return r, false
 	}
+	if trace := traceFrom(r.Context()); trace != nil {
+		trace.user = principal.UserID
+	}
 	return r.WithContext(context.WithValue(r.Context(), principalContextKey{}, principal)), true
 }
 
@@ -116,7 +126,7 @@ func requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {
 	return false
 }
 
-func chat(w http.ResponseWriter, r *http.Request) {
+func chat(w http.ResponseWriter, r *http.Request, quotas QuotaChecker, afterQuota chatHandler) {
 	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || mediaType != "application/json" || r.Header.Get("Content-Encoding") != "" {
 		writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "Send an uncompressed application/json body.", "")
@@ -144,7 +154,14 @@ func chat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", message, param)
 		return
 	}
-	writeError(w, http.StatusNotImplemented, "not_implemented", "Chat inference is not implemented. This endpoint validates requests only.", "")
+	if !checkQuota(w, r, quotas) {
+		return
+	}
+	afterQuota(w, r, *request)
+}
+
+func inferenceNotImplemented(w http.ResponseWriter, _ *http.Request, _ ChatRequest) {
+	writeError(w, http.StatusNotImplemented, "not_implemented", "Chat inference is not implemented. This endpoint validates requests and checks quotas only.", "")
 }
 
 func decodeError(w http.ResponseWriter, err error) {
