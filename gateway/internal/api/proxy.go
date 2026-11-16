@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"mime"
 	"net/http"
 	"time"
 
 	"llm-gateway-scheduler/gateway/internal/registry"
 	"llm-gateway-scheduler/gateway/internal/routing"
+	"llm-gateway-scheduler/gateway/internal/scheduler"
 )
 
 const maxJSONBytes = 4 << 20
@@ -32,116 +32,65 @@ type ProxyOptions struct {
 func DefaultProxyOptions() ProxyOptions {
 	return ProxyOptions{2 * time.Minute, 30 * time.Second, 10 * time.Second}
 }
-func (o ProxyOptions) Validate() error {
-	if o.RequestTimeout <= 0 || o.RequestTimeout > 30*time.Minute || o.IdleTimeout <= 0 || o.IdleTimeout > 5*time.Minute || o.WriteTimeout <= 0 || o.WriteTimeout > time.Minute {
+func (options ProxyOptions) Validate() error {
+	if options.RequestTimeout <= 0 || options.RequestTimeout > 30*time.Minute || options.IdleTimeout <= 0 || options.IdleTimeout > 5*time.Minute || options.WriteTimeout <= 0 || options.WriteTimeout > time.Minute {
 		return fmt.Errorf("request timeout must be in (0,30m], backend idle timeout in (0,5m], client write timeout in (0,1m]")
 	}
 	return nil
 }
 
-// idleReader cancels the HTTP request to unblock a stalled body Read. There is
-// no background body-reading goroutine or unbounded producer/consumer queue.
-type idleReader struct {
-	reader  io.Reader
-	timeout time.Duration
-	cancel  context.CancelCauseFunc
-}
-
-func (r idleReader) Read(p []byte) (int, error) {
-	timer := time.AfterFunc(r.timeout, func() { r.cancel(errIdle) })
-	defer timer.Stop()
-	return r.reader.Read(p)
-}
-
-type limitedReader struct {
-	reader    io.Reader
-	remaining int64
-}
-
-func (r *limitedReader) Read(p []byte) (int, error) {
-	if r.remaining == 0 {
-		var extra [1]byte
-		n, err := r.reader.Read(extra[:])
-		if n > 0 {
-			return 0, errLimit
-		}
-		return 0, err
-	}
-	if int64(len(p)) > r.remaining {
-		p = p[:r.remaining]
-	}
-	n, err := r.reader.Read(p)
-	r.remaining -= int64(n)
-	return n, err
-}
-
-type proxyOutput struct {
-	w           http.ResponseWriter
-	ctx         context.Context
-	timeout     time.Duration
-	contentType string
-	started     bool
-}
-
-func (o *proxyOutput) Write(p []byte) (int, error) { return o.write(p, false) }
-func (o *proxyOutput) write(p []byte, errorFrame bool) (int, error) {
-	controller := http.NewResponseController(o.w)
-	n := 0
-	for len(p) > 0 {
-		if !errorFrame && o.ctx.Err() != nil {
-			return n, o.ctx.Err()
-		}
-		deadline := time.Now().Add(o.timeout)
-		if errorFrame {
-			deadline = time.Now().Add(min(o.timeout, time.Second))
-		} else if limit, ok := o.ctx.Deadline(); ok && limit.Before(deadline) {
-			deadline = limit
-		}
-		if err := controller.SetWriteDeadline(deadline); err != nil && !errors.Is(err, http.ErrNotSupported) {
-			return n, errors.Join(errClientWrite, err)
-		}
-		if !o.started {
-			o.w.Header().Set("Content-Type", o.contentType)
-			o.w.Header().Set("Cache-Control", "no-store")
-			o.w.Header().Set("X-Accel-Buffering", "no")
-			o.started = true
-		}
-		size := min(len(p), 16<<10)
-		written, err := o.w.Write(p[:size])
-		n += written
-		if err != nil {
-			return n, errors.Join(errClientWrite, err)
-		}
-		if written != size {
-			return n, errors.Join(errClientWrite, io.ErrShortWrite)
-		}
-		p = p[size:]
-		if err := controller.Flush(); err != nil {
-			return n, errors.Join(errClientWrite, err)
-		}
-	}
-	return n, nil
-}
-
-func (h *RegisteredHandler) proxy(w http.ResponseWriter, r *http.Request, p *preparedRequest) {
-	ctx, cancel := context.WithCancelCause(r.Context())
+func (handler *RegisteredHandler) forwardBackendResponse(responseWriter http.ResponseWriter, request *http.Request, prepared *preparedRequest) {
+	ctx, cancel := context.WithCancelCause(request.Context())
 	defer cancel(nil)
-	trace := traceFrom(ctx)
-	base, _ := registry.LocalURL(p.model.Backend.BaseURL)
-	p.idle = func(ctx context.Context) (bool, error) { return h.execution.Idle(ctx, p.model) }
-	h.capacity.Recover(ctx, base, p.idle)
-	lease, capacityErr := h.capacity.Acquire(base)
-	if capacityErr != nil {
-		code := capacityErr.Error()
+	trace := requestTraceFromContext(ctx)
+	base, _ := registry.LocalURL(prepared.model.Backend.BaseURL)
+	prepared.idle = func(ctx context.Context) (bool, error) { return handler.execution.Idle(ctx, prepared.model) }
+	handler.capacity.Recover(ctx, base, prepared.idle)
+
+	class := "interactive"
+	if trace != nil {
+		class = trace.class
+	}
+	// Queue deadlines are independent of socket write deadlines. Keep the
+	// receipt-to-completion context deadline while waiting, then reset writes.
+	http.NewResponseController(responseWriter).SetWriteDeadline(time.Time{})
+	result := handler.scheduler.Wait(ctx, base, class)
+	http.NewResponseController(responseWriter).SetWriteDeadline(time.Now().Add(handler.options.WriteTimeout))
+	if trace != nil {
+		trace.queueWait = result.Wait
+		trace.schedulerPolicy = result.Policy
+		trace.dispatchReason = result.Reason
+		trace.selectionSequence = result.SelectionSequence
+	}
+	if result.Err != nil {
+		if errors.Is(result.Err, context.Canceled) {
+			if trace != nil {
+				trace.outcome = "request_cancelled"
+			}
+			return
+		}
+		code, status := result.Err.Error(), 503
+		if errors.Is(result.Err, scheduler.ErrTimeout) {
+			status = 504
+		}
+		if errors.Is(result.Err, context.DeadlineExceeded) {
+			status, code = 504, "request_timeout"
+		}
 		if trace != nil {
 			trace.outcome = code
 		}
-		w.Header().Set("Retry-After", "1")
-		writeError(w, 503, code, "Execution capacity is busy or awaiting confirmed backend cleanup.", "")
+		if status == 503 {
+			responseWriter.Header().Set("Retry-After", "1")
+		}
+		writeError(responseWriter, status, code, "The request could not obtain execution capacity within the queue limits.", "")
 		return
 	}
-	p.lease = lease
-	idle, probeErr := p.idle(ctx)
+	prepared.lease = result.Lease
+	if ctx.Err() != nil {
+		return
+	}
+
+	idle, probeErr := prepared.idle(ctx)
 	if probeErr != nil || !idle {
 		code := "capacity_exceeded"
 		if probeErr != nil {
@@ -150,36 +99,36 @@ func (h *RegisteredHandler) proxy(w http.ResponseWriter, r *http.Request, p *pre
 		if trace != nil {
 			trace.outcome = code
 		}
-		w.Header().Set("Retry-After", "1")
-		writeError(w, 503, code, "The backend execution slot is busy or could not be verified.", "")
+		responseWriter.Header().Set("Retry-After", "1")
+		writeError(responseWriter, 503, code, "The backend execution slot is busy or could not be verified.", "")
 		return
 	}
 	// Collect final usage even when the caller does not want a usage-only event.
-	if p.payload.Stream {
-		p.payload.IncludeUsage = true
+	if prepared.payload.Stream {
+		prepared.payload.IncludeUsage = true
 	}
 	if trace != nil {
 		trace.dispatch = time.Now()
 		trace.outcome = "backend_error"
-		p.payload.RequestID = trace.id
+		prepared.payload.RequestID = trace.id
 	}
-	response, err := p.dispatch(ctx, h.client)
-	output := &proxyOutput{w: w, ctx: ctx, timeout: h.options.WriteTimeout, contentType: "application/json"}
+	response, err := prepared.sendToBackend(ctx, handler.client)
+	output := &proxyOutput{responseWriter: responseWriter, ctx: ctx, timeout: handler.options.WriteTimeout, contentType: "application/json"}
 	if err == nil {
 		contentType, params, parseErr := mime.ParseMediaType(response.Header.Get("Content-Type"))
 		expected := "application/json"
-		if p.payload.Stream {
+		if prepared.payload.Stream {
 			expected = "text/event-stream"
 		}
 		if response.StatusCode != 200 || parseErr != nil || contentType != expected || (params["charset"] != "" && params["charset"] != "utf-8" && params["charset"] != "UTF-8") || (response.Header.Get("Content-Encoding") != "" && response.Header.Get("Content-Encoding") != "identity") {
 			err = errProtocol
 		} else {
 			output.contentType = expected
-			reader := idleReader{reader: response.Body, timeout: h.options.IdleTimeout, cancel: cancel}
-			if p.payload.Stream {
-				err = relaySSE(&limitedReader{reader: reader, remaining: maxStreamBytes}, output, trace, &p.facts)
+			reader := idleReader{reader: response.Body, timeout: handler.options.IdleTimeout, cancel: cancel}
+			if prepared.payload.Stream {
+				err = relaySSE(&limitedReader{reader: reader, remaining: maxStreamBytes}, output, trace, &prepared.facts)
 			} else {
-				err = relayJSON(&limitedReader{reader: reader, remaining: maxJSONBytes}, output, trace, &p.facts)
+				err = relayJSON(&limitedReader{reader: reader, remaining: maxJSONBytes}, output, trace, &prepared.facts)
 			}
 		}
 	}
@@ -195,18 +144,18 @@ func (h *RegisteredHandler) proxy(w http.ResponseWriter, r *http.Request, p *pre
 		trace.outcome = code
 	}
 	cancel(err) // Stop backend work promptly before any error delivery to the client.
-	if errors.Is(r.Context().Err(), context.Canceled) || errors.Is(err, errClientWrite) {
+	if errors.Is(request.Context().Err(), context.Canceled) || errors.Is(err, errClientWrite) {
 		if output.started {
 			panic(http.ErrAbortHandler)
 		}
 		return
 	}
 	if !output.started {
-		http.NewResponseController(w).SetWriteDeadline(time.Now().Add(min(h.options.WriteTimeout, time.Second)))
-		writeError(w, status, code, message, "")
+		http.NewResponseController(responseWriter).SetWriteDeadline(time.Now().Add(min(handler.options.WriteTimeout, time.Second)))
+		writeError(responseWriter, status, code, message, "")
 		return
 	}
-	if !p.payload.Stream {
+	if !prepared.payload.Stream {
 		panic(http.ErrAbortHandler)
 	} // No second JSON document or clean EOF on a broken reply.
 	frame, _ := json.Marshal(ErrorResponse{Error: APIError{Type: "server_error", Code: code, Message: message}})

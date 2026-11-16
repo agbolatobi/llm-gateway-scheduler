@@ -11,19 +11,19 @@ import (
 
 // SSE recognizes LF, CRLF and CR. The emitted framing is normalized to LF.
 func splitSSELine(data []byte, atEOF bool) (int, []byte, error) {
-	for i, b := range data {
-		if b == '\n' {
-			return i + 1, data[:i], nil
+	for byteIndex, currentByte := range data {
+		if currentByte == '\n' {
+			return byteIndex + 1, data[:byteIndex], nil
 		}
-		if b == '\r' {
-			if i+1 == len(data) && !atEOF {
+		if currentByte == '\r' {
+			if byteIndex+1 == len(data) && !atEOF {
 				return 0, nil, nil
 			}
-			n := i + 1
-			if n < len(data) && data[n] == '\n' {
-				n++
+			consumedBytes := byteIndex + 1
+			if consumedBytes < len(data) && data[consumedBytes] == '\n' {
+				consumedBytes++
 			}
-			return n, data[:i], nil
+			return consumedBytes, data[:byteIndex], nil
 		}
 	}
 	if atEOF && len(data) > 0 {
@@ -97,38 +97,38 @@ func relaySSE(reader io.Reader, output *proxyOutput, trace *requestTrace, args .
 			_, err := output.Write(raw)
 			return err
 		}
-		d := json.NewDecoder(strings.NewReader(payload))
-		d.UseNumber()
+		decoder := json.NewDecoder(strings.NewReader(payload))
+		decoder.UseNumber()
 		var hasCreated, hasChoices, hasIndex, hasDelta bool
 		var usage usageCollector
-		if err := walkJSON(d, nil, 0, func(path []string, v any) error {
-			usage.observe(path, v)
-			if len(path) == 0 && v != json.Delim('{') {
+		if err := walkJSON(decoder, nil, 0, func(path []string, jsonValue any) error {
+			usage.observe(path, jsonValue)
+			if len(path) == 0 && jsonValue != json.Delim('{') {
 				return errProtocol
 			}
 			if len(path) == 1 && path[0] == "error" {
 				return errProtocol
 			}
 			if len(path) == 1 && path[0] == "created" {
-				n, ok := v.(json.Number)
+				number, ok := jsonValue.(json.Number)
 				if !ok {
 					return errProtocol
 				}
-				i, err := n.Int64()
-				hasCreated = err == nil && i >= 0
+				createdTimestamp, err := number.Int64()
+				hasCreated = err == nil && createdTimestamp >= 0
 			}
 			if len(path) == 1 && path[0] == "choices" {
-				hasChoices = v == json.Delim('[')
+				hasChoices = jsonValue == json.Delim('[')
 				if !hasChoices {
 					return errProtocol
 				}
 			}
 			if len(path) == 3 && path[0] == "choices" && path[2] == "index" {
-				n, ok := v.(json.Number)
-				hasIndex = ok && string(n) == "0"
+				number, ok := jsonValue.(json.Number)
+				hasIndex = ok && string(number) == "0"
 			}
 			if len(path) == 3 && path[0] == "choices" && path[2] == "delta" {
-				hasDelta = v == json.Delim('{')
+				hasDelta = jsonValue == json.Delim('{')
 				if !hasDelta {
 					return errProtocol
 				}
@@ -140,7 +140,7 @@ func relaySSE(reader io.Reader, output *proxyOutput, trace *requestTrace, args .
 		}); err != nil {
 			return errProtocol
 		}
-		if err := jsonEOF(d); err != nil {
+		if err := jsonEOF(decoder); err != nil {
 			return errProtocol
 		}
 		var chunk Chunk
@@ -174,7 +174,7 @@ func relaySSE(reader io.Reader, output *proxyOutput, trace *requestTrace, args .
 				return errProtocol
 			}
 			if choice.Delta.Content != nil && *choice.Delta.Content != "" {
-				trace.text()
+				trace.markFirstText()
 			}
 			if choice.FinishReason != nil {
 				if *choice.FinishReason == "" {

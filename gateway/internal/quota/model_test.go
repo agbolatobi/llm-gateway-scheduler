@@ -6,75 +6,75 @@ import (
 	"testing"
 )
 
-func TestThreeAccountReservation(t *testing.T) {
-	c := DefaultConfig()
-	c.Models[0].Limits.Tokens = 100
-	c.User.Tokens = 1000
-	m, _ := testManager(t, c)
-	r, d := m.ReserveForModel("alice", "local-llm", 70)
-	if !d.Allowed {
-		t.Fatal(d)
+func TestThreeAccountReservation(testContext *testing.T) {
+	config := DefaultConfig()
+	config.Models[0].Limits.Tokens = 100
+	config.User.Tokens = 1000
+	quotaManager, _ := testManager(testContext, config)
+	reservation, quotaDecision := quotaManager.ReserveForModel("alice", "local-llm", 70)
+	if !quotaDecision.Allowed {
+		testContext.Fatal(quotaDecision)
 	}
-	if _, d := m.ReserveForModel("bob", "local-llm", 40); d.Code != "model_token_limit" {
-		t.Fatal(d)
+	if _, quotaDecision := quotaManager.ReserveForModel("bob", "local-llm", 40); quotaDecision.Code != "model_token_limit" {
+		testContext.Fatal(quotaDecision)
 	}
-	if m.budgets["bob"] != nil || m.globalBudget.reserved != 70 || m.modelRequests["local-llm"] != 1 {
-		t.Fatal("partial charge")
+	if quotaManager.budgets["bob"] != nil || quotaManager.globalBudget.reserved != 70 || quotaManager.modelRequests["local-llm"] != 1 {
+		testContext.Fatal("partial charge")
 	}
-	if err := m.SettleTokens(r, 20); err != nil {
-		t.Fatal(err)
+	if err := quotaManager.SettleTokens(reservation, 20); err != nil {
+		testContext.Fatal(err)
 	}
-	if m.modelBudgets["local-llm"].spent != 20 || m.modelBudgets["local-llm"].reserved != 0 {
-		t.Fatal("model settlement")
+	if quotaManager.modelBudgets["local-llm"].spent != 20 || quotaManager.modelBudgets["local-llm"].reserved != 0 {
+		testContext.Fatal("model settlement")
 	}
-	if _, d := m.ReserveForModel("bob", "default", 1); d.Code != "model_not_found" {
-		t.Fatal("manager must only accept canonical IDs")
-	}
-}
-
-func TestModelRequestLimitAndRemoval(t *testing.T) {
-	c := DefaultConfig()
-	c.Models[0].Limits.Requests = 1
-	c.Models = append(c.Models, Model{ID: "second", Limits: Limits{30, 100000}})
-	m, _ := testManager(t, c)
-	r, d := m.ReserveForModel("alice", "local-llm", 1)
-	if !d.Allowed {
-		t.Fatal(d)
-	}
-	m.SettleTokens(r, 0)
-	if _, d := m.ReserveForModel("bob", "local-llm", 1); d.Code != "model_request_limit" {
-		t.Fatal(d)
-	}
-	removed := c
-	removed.Models = c.Models[1:]
-	if err := m.Reconfigure(removed); err != nil {
-		t.Fatal(err)
-	}
-	if err := m.Reconfigure(c); err != nil {
-		t.Fatal(err)
-	}
-	if _, d := m.ReserveForModel("bob", "local-llm", 1); d.Code != "model_request_limit" {
-		t.Fatal("re-registration reset usage")
+	if _, quotaDecision := quotaManager.ReserveForModel("bob", "default", 1); quotaDecision.Code != "model_not_found" {
+		testContext.Fatal("manager must only accept canonical IDs")
 	}
 }
 
-func TestConcurrentModelReservations(t *testing.T) {
-	c := DefaultConfig()
-	c.Models[0].Limits.Requests = 10
-	m, _ := testManager(t, c)
+func TestModelRequestLimitAndRemoval(testContext *testing.T) {
+	config := DefaultConfig()
+	config.Models[0].Limits.Requests = 1
+	config.Models = append(config.Models, Model{ID: "second", Limits: Limits{30, 100000}})
+	quotaManager, _ := testManager(testContext, config)
+	reservation, quotaDecision := quotaManager.ReserveForModel("alice", "local-llm", 1)
+	if !quotaDecision.Allowed {
+		testContext.Fatal(quotaDecision)
+	}
+	quotaManager.SettleTokens(reservation, 0)
+	if _, quotaDecision := quotaManager.ReserveForModel("bob", "local-llm", 1); quotaDecision.Code != "model_request_limit" {
+		testContext.Fatal(quotaDecision)
+	}
+	removed := config
+	removed.Models = config.Models[1:]
+	if err := quotaManager.Reconfigure(removed); err != nil {
+		testContext.Fatal(err)
+	}
+	if err := quotaManager.Reconfigure(config); err != nil {
+		testContext.Fatal(err)
+	}
+	if _, quotaDecision := quotaManager.ReserveForModel("bob", "local-llm", 1); quotaDecision.Code != "model_request_limit" {
+		testContext.Fatal("re-registration reset usage")
+	}
+}
+
+func TestConcurrentModelReservations(testContext *testing.T) {
+	config := DefaultConfig()
+	config.Models[0].Limits.Requests = 10
+	quotaManager, _ := testManager(testContext, config)
 	var wg sync.WaitGroup
 	var accepted atomic.Int64
-	for i := 0; i < 100; i++ {
+	for index := 0; index < 100; index++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, d := m.ReserveForModel("alice", "local-llm", 1); d.Allowed {
+			if _, quotaDecision := quotaManager.ReserveForModel("alice", "local-llm", 1); quotaDecision.Allowed {
 				accepted.Add(1)
 			}
 		}()
 	}
 	wg.Wait()
-	if accepted.Load() != 10 || m.globalBudget.reserved != 10 || m.modelBudgets["local-llm"].reserved != 10 {
-		t.Fatal("oversubscription")
+	if accepted.Load() != 10 || quotaManager.globalBudget.reserved != 10 || quotaManager.modelBudgets["local-llm"].reserved != 10 {
+		testContext.Fatal("oversubscription")
 	}
 }

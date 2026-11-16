@@ -10,7 +10,6 @@ from urllib.parse import urlsplit
 
 import requests
 
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SERVER_BINARY = PROJECT_ROOT / "runtime/llama-b11669/llama-server"
 MODEL_FILE = PROJECT_ROOT / "models/qwen2.5-1.5b-instruct-q4_k_m.gguf"
@@ -19,13 +18,22 @@ MODEL_FILE = PROJECT_ROOT / "models/qwen2.5-1.5b-instruct-q4_k_m.gguf"
 def launch_options(options=None):
     """Validated overrides for a new server; existing servers are never reconfigured."""
     options = dict(options or {})
-    integers = {"ctx_size", "parallel", "threads", "threads_batch", "batch_size",
-                "ubatch_size", "log_verbosity"}
+    integers = {
+        "ctx_size",
+        "parallel",
+        "threads",
+        "threads_batch",
+        "batch_size",
+        "ubatch_size",
+        "log_verbosity",
+    }
     booleans = {"cont_batching", "kv_unified"}
     if options.keys() - integers - booleans:
         raise ValueError("Unknown server startup option")
     for key, value in options.items():
-        if key in integers and (type(value) is not int or value < (0 if key == "log_verbosity" else 1)):
+        if key in integers and (
+            type(value) is not int or value < (0 if key == "log_verbosity" else 1)
+        ):
             raise ValueError(f"{key} must be a positive integer (verbosity may be zero)")
         if key in booleans and type(value) is not bool:
             raise ValueError(f"{key} must be boolean")
@@ -86,7 +94,8 @@ def _is_connection_refused(error):
 def _health(session, address, deadline):
     try:
         with session.get(
-            f"{address}/health", timeout=min(2, _remaining(deadline)),
+            f"{address}/health",
+            timeout=min(2, _remaining(deadline)),
             allow_redirects=False,
         ) as response:
             # Only the documented loading response is safe to wait on.
@@ -120,9 +129,18 @@ def _stop_owned_process(process):
             process.wait(timeout=5)
 
 
-def ensure_server_ready(base_url, *, model="local-llm", timeout=120,
-                        server_options=None, on_start=None, model_file=None,
-                        server_binary=None, device="none", verify_ready=None):
+def ensure_server_ready(
+    base_url,
+    *,
+    model="local-llm",
+    timeout=120,
+    server_options=None,
+    on_start=None,
+    model_file=None,
+    server_binary=None,
+    device="none",
+    verify_ready=None,
+):
     """Return the log path if started, or None if an existing server was reused.
 
     Successfully started servers persist after the CLI exits. A failed or
@@ -179,15 +197,27 @@ def ensure_server_ready(base_url, *, model="local-llm", timeout=120,
                         if not weights.is_file():
                             raise RuntimeError(f"Model file not found: {weights}")
                         command = [
-                            str(binary), "--model", str(weights),
-                            "--alias", model, "--host", "127.0.0.1",
-                            "--port", str(port), "--device", device, *extra_options,
+                            str(binary),
+                            "--model",
+                            str(weights),
+                            "--alias",
+                            model,
+                            "--host",
+                            "127.0.0.1",
+                            "--port",
+                            str(port),
+                            "--device",
+                            device,
+                            *extra_options,
                         ]
                         with log_path.open("ab") as log:
                             process = subprocess.Popen(
-                                command, cwd=PROJECT_ROOT,
-                                stdin=subprocess.DEVNULL, stdout=log,
-                                stderr=subprocess.STDOUT, start_new_session=True,
+                                command,
+                                cwd=PROJECT_ROOT,
+                                stdin=subprocess.DEVNULL,
+                                stdout=log,
+                                stderr=subprocess.STDOUT,
+                                start_new_session=True,
                             )
                         if on_start is not None:
                             on_start(process, log_path)

@@ -41,22 +41,49 @@ def load_plan(path, source):
         raise ValueError("Plan requires concurrency [1, 2, 4] and two context limits")
     options = plan["server"]
     server.launch_options(options)
-    if options["parallel"] < 4 or options.get("cont_batching") is not True or options.get("kv_unified") is not False:
-        raise ValueError("Use at least four fixed slots, continuous batching and non-unified KV")
-    required = {"ctx_size", "parallel", "threads", "threads_batch", "batch_size", "ubatch_size", "log_verbosity"}
+    if (
+        options["parallel"] < 4
+        or options.get("cont_batching") is not True
+        or options.get("kv_unified") is not False
+    ):
+        raise ValueError(
+            "Use at least four fixed slots, continuous batching and non-unified KV"
+        )
+    required = {
+        "ctx_size",
+        "parallel",
+        "threads",
+        "threads_batch",
+        "batch_size",
+        "ubatch_size",
+        "log_verbosity",
+    }
     if required - options.keys():
         raise ValueError("Explicit context/slot/thread/batch/log settings are required")
     for context in plan["context"]:
         if context < 512 * options["parallel"] or context % options["parallel"]:
-            raise ValueError("Each context must divide evenly into at least 512 tokens per slot")
+            raise ValueError(
+                "Each context must divide evenly into at least 512 tokens per slot"
+            )
     if options["ctx_size"] not in plan["context"]:
-        raise ValueError("The concurrency context must also be tested in the context experiment")
+        raise ValueError(
+            "The concurrency context must also be tested in the context experiment"
+        )
     for key, low, high in (("memory_interval", 0.1, 1), ("idle_seconds", 1, 30)):
         value = plan[key]
-        if type(value) not in (int, float) or not math.isfinite(value) or not low <= value <= high:
+        if (
+            type(value) not in (int, float)
+            or not math.isfinite(value)
+            or not low <= value <= high
+        ):
             raise ValueError(f"{key} must be between {low} and {high}")
-    for key in ("max_e2e_seconds", "max_ttft_seconds", "max_ram_mib",
-                "min_available_ram_mib", "request_timeout_seconds"):
+    for key in (
+        "max_e2e_seconds",
+        "max_ttft_seconds",
+        "max_ram_mib",
+        "min_available_ram_mib",
+        "request_timeout_seconds",
+    ):
         value = plan["limits"][key]
         if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
             raise ValueError(f"{key} must be positive and finite")
@@ -78,7 +105,9 @@ def require_headroom(plan):
 
 def require_free_port(port):
     if port == 8080 or not 1024 <= port <= 65535:
-        raise ValueError("Use a dedicated experiment port from 1024-65535, not the project's 8080")
+        raise ValueError(
+            "Use a dedicated experiment port from 1024-65535, not the project's 8080"
+        )
     with socket.socket() as probe:
         # Permit our previous server's closed TCP connections, not a live listener.
         probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -91,23 +120,47 @@ def check_input_budget(address, plan, source):
     prompt = workload["prompts"][case["prompt_id"]]["prompt"]
     with requests.Session() as session:
         session.trust_env = False
+
         def query(method, endpoint, **kwargs):
-            response = session.request(method, address + endpoint, timeout=5, allow_redirects=False, **kwargs)
+            response = session.request(
+                method, address + endpoint, timeout=5, allow_redirects=False, **kwargs
+            )
             response.raise_for_status()
             return response.json()
+
         slots = query("GET", "/slots")
-        if not isinstance(slots, list) or not slots or any(item.get("is_processing") for item in slots):
+        if (
+            not isinstance(slots, list)
+            or not slots
+            or any(item.get("is_processing") for item in slots)
+        ):
             raise RuntimeError("Experiment server is not idle")
-        formatted = query("POST", "/apply-template", json={"messages": [{"role": "user", "content": prompt}]})
-        tokens = query("POST", "/tokenize", json={"content": formatted["prompt"],
-                                                "add_special": True, "parse_special": True})["tokens"]
-        if not isinstance(tokens, list) or not tokens or any(type(token) is not int for token in tokens):
+        formatted = query(
+            "POST", "/apply-template", json={"messages": [{"role": "user", "content": prompt}]}
+        )
+        tokens = query(
+            "POST",
+            "/tokenize",
+            json={"content": formatted["prompt"], "add_special": True, "parse_special": True},
+        )["tokens"]
+        if (
+            not isinstance(tokens, list)
+            or not tokens
+            or any(type(token) is not int for token in tokens)
+        ):
             raise ValueError("Model tokenizer did not return token IDs")
         contexts = [item["n_ctx"] for item in slots]
-        if any(type(value) is not int or len(tokens) + case["max_tokens"] > value for value in contexts):
+        if any(
+            type(value) is not int or len(tokens) + case["max_tokens"] > value
+            for value in contexts
+        ):
             raise ValueError("Chat-templated input plus output cap exceeds per-slot context")
-        return {"input_tokens": len(tokens), "output_cap": case["max_tokens"],
-                "slot_contexts": contexts, "method": "/apply-template then /tokenize, add_special/parse_special true"}
+        return {
+            "input_tokens": len(tokens),
+            "output_cap": case["max_tokens"],
+            "slot_contexts": contexts,
+            "method": "/apply-template then /tokenize, add_special/parse_special true",
+        }
 
 
 class PhaseMemoryMonitor(memory.MemoryMonitor):
@@ -117,10 +170,15 @@ class PhaseMemoryMonitor(memory.MemoryMonitor):
 
     def summary(self):
         value = super().summary()
-        value.update(scope="server_process_" + self.phase,
-                     window=("first verified process observation through readiness; earliest allocations may be missed"
-                             if self.phase == "startup" else "post-readiness idle interval before experiment requests"),
-                     baseline_kind="first observation in this phase; not allocator-reserved memory")
+        value.update(
+            scope="server_process_" + self.phase,
+            window=(
+                "first verified process observation through readiness; earliest allocations may be missed"
+                if self.phase == "startup"
+                else "post-readiness idle interval before experiment requests"
+            ),
+            baseline_kind="first observation in this phase; not allocator-reserved memory",
+        )
         return value
 
 
@@ -163,8 +221,10 @@ class OwnedServer:
         try:
             started = time.perf_counter_ns()
             path = server.ensure_server_ready(
-                self.address, timeout=120,
-                server_options={**self.plan["server"], "ctx_size": self.context}, on_start=self.started,
+                self.address,
+                timeout=120,
+                server_options={**self.plan["server"], "ctx_size": self.context},
+                on_start=self.started,
             )
             ready = time.perf_counter_ns()
             if path is None or self.process is None:
@@ -177,15 +237,26 @@ class OwnedServer:
                 stream.seek(offset)
                 text = stream.read().decode(errors="replace")
             (self.root / "startup.log").write_text(text, encoding="utf-8")
-            allocations = [line for line in text.splitlines()
-                           if "buffer size" in line or "n_ctx" in line or "n_batch" in line
-                           or "kv_unified" in line or "n_ubatch" in line]
-            run.save_run(self.root / "startup.json", {
-                "launch_to_readiness_seconds": (ready - started) / 1e9,
-                "allocation_log_lines": allocations,
-                "allocation_unavailable_reason": None if allocations else "backend_allocations_not_logged",
-                "scope": "fresh process; filesystem cache is not flushed; sampled process RSS is not KV allocation",
-            })
+            allocations = [
+                line
+                for line in text.splitlines()
+                if "buffer size" in line
+                or "n_ctx" in line
+                or "n_batch" in line
+                or "kv_unified" in line
+                or "n_ubatch" in line
+            ]
+            run.save_run(
+                self.root / "startup.json",
+                {
+                    "launch_to_readiness_seconds": (ready - started) / 1e9,
+                    "allocation_log_lines": allocations,
+                    "allocation_unavailable_reason": (
+                        None if allocations else "backend_allocations_not_logged"
+                    ),
+                    "scope": "fresh process; filesystem cache is not flushed; sampled process RSS is not KV allocation",
+                },
+            )
             idle = PhaseMemoryMonitor(self.address, self.plan["memory_interval"], "idle")
             with idle:
                 time.sleep(self.plan["idle_seconds"])
@@ -201,17 +272,40 @@ class OwnedServer:
 
 
 def command(plan, source, root, port, concurrency):
-    return [sys.executable, "-m", "benchmarks.run", "--input", str(source),
-            "--case", plan["case"], "--concurrency", str(concurrency),
-            "--repetitions", str(plan["repetitions"]), "--warmup-requests", str(plan["warmup_requests"]),
-            "--memory-interval", str(plan["memory_interval"]), "--temperature", "0", "--prompt-cache", "off",
-            "--request-timeout", str(plan["limits"]["request_timeout_seconds"]),
-            "--base-url", f"http://127.0.0.1:{port}", "--no-start-server", "--output", str(root / "run")]
+    return [
+        sys.executable,
+        "-m",
+        "benchmarks.run",
+        "--input",
+        str(source),
+        "--case",
+        plan["case"],
+        "--concurrency",
+        str(concurrency),
+        "--repetitions",
+        str(plan["repetitions"]),
+        "--warmup-requests",
+        str(plan["warmup_requests"]),
+        "--memory-interval",
+        str(plan["memory_interval"]),
+        "--temperature",
+        "0",
+        "--prompt-cache",
+        "off",
+        "--request-timeout",
+        str(plan["limits"]["request_timeout_seconds"]),
+        "--base-url",
+        f"http://127.0.0.1:{port}",
+        "--no-start-server",
+        "--output",
+        str(root / "run"),
+    ]
 
 
 def stop_profile(process):
     """Signal only the process group created for this benchmark; keep its exports."""
     import os
+
     if process.poll() is None:
         for sig, timeout in ((signal.SIGINT, 15), (signal.SIGTERM, 5), (signal.SIGKILL, 5)):
             try:
@@ -228,20 +322,37 @@ def stop_profile(process):
 
 def profile_stage(arguments, root, plan, owned):
     with (root / "runner.log").open("w", encoding="utf-8") as log:
-        with subprocess.Popen(arguments, cwd=PROJECT_ROOT, stdout=log, stderr=subprocess.STDOUT,
-                              start_new_session=True) as process:
+        with subprocess.Popen(
+            arguments,
+            cwd=PROJECT_ROOT,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        ) as process:
             try:
-                deadline = time.monotonic() + plan["repetitions"] * plan["limits"]["request_timeout_seconds"] + 120
+                deadline = (
+                    time.monotonic()
+                    + plan["repetitions"] * plan["limits"]["request_timeout_seconds"]
+                    + 120
+                )
                 while process.poll() is None:
                     if time.monotonic() > deadline:
-                        raise RuntimeError("Experiment condition exceeded its wall-clock safety timeout")
+                        raise RuntimeError(
+                            "Experiment condition exceeded its wall-clock safety timeout"
+                        )
                     require_headroom(plan)
-                    if (memory.process_start(owned.process.pid) != owned.ticks
-                            or memory.rss_mib(owned.process.pid) > plan["limits"]["max_ram_mib"]):
-                        raise RuntimeError("Server identity/RSS safety limit failed; profile stopped")
+                    if (
+                        memory.process_start(owned.process.pid) != owned.ticks
+                        or memory.rss_mib(owned.process.pid) > plan["limits"]["max_ram_mib"]
+                    ):
+                        raise RuntimeError(
+                            "Server identity/RSS safety limit failed; profile stopped"
+                        )
                     time.sleep(0.2)
                 if process.returncode:
-                    raise RuntimeError(f"Benchmark exited {process.returncode}; inspect {root / 'runner.log'}")
+                    raise RuntimeError(
+                        f"Benchmark exited {process.returncode}; inspect {root / 'runner.log'}"
+                    )
             finally:
                 stop_profile(process)
 
@@ -265,7 +376,9 @@ def main(argv=None):
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--port", type=int, default=8081)
-    parser.add_argument("--dry-run", action="store_true", help="Print the plan only; no files/processes/network")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Print the plan only; no files/processes/network"
+    )
     args = parser.parse_args(argv)
     record = root = None
     try:
@@ -273,24 +386,48 @@ def main(argv=None):
         if args.port == 8080 or not 1024 <= args.port <= 65535:
             raise ValueError("Use a dedicated port, not 8080")
         kinds = ["concurrency", "context"] if args.experiment == "all" else [args.experiment]
-        conditions = [(kind, level if kind == "concurrency" else 1,
-                       plan["server"]["ctx_size"] if kind == "concurrency" else level)
-                      for kind in kinds for level in plan[kind]]
-        root = (args.output or PROJECT_ROOT / "benchmarks/artifacts" / ("experiments-" + new_name())).resolve()
+        conditions = [
+            (
+                kind,
+                level if kind == "concurrency" else 1,
+                plan["server"]["ctx_size"] if kind == "concurrency" else level,
+            )
+            for kind in kinds
+            for level in plan[kind]
+        ]
+        root = (
+            args.output or PROJECT_ROOT / "benchmarks/artifacts" / ("experiments-" + new_name())
+        ).resolve()
         if root.exists():
             raise FileExistsError("Experiment output already exists; choose a new directory")
         if args.dry_run:
-            print(json.dumps({"plan": plan, "conditions": conditions, "port": args.port,
-                              "output": str(root)}, indent=2))
+            print(
+                json.dumps(
+                    {
+                        "plan": plan,
+                        "conditions": conditions,
+                        "port": args.port,
+                        "output": str(root),
+                    },
+                    indent=2,
+                )
+            )
             return 0
         run.installed_executable()  # Fail before starting a model if dependencies are absent.
         require_free_port(args.port)
         require_headroom(plan)
         with experiment_lock(args.port):
             root.mkdir(parents=True, exist_ok=False)
-            record = {"schema_version": 1, "status": "running", "plan": plan,
-                      "experiments": kinds, "input": str(args.input.resolve()), "port": args.port,
-                      "stages": [], "errors": []}
+            record = {
+                "schema_version": 1,
+                "status": "running",
+                "plan": plan,
+                "experiments": kinds,
+                "input": str(args.input.resolve()),
+                "port": args.port,
+                "stages": [],
+                "errors": [],
+            }
             run.save_run(root / "experiment.json", record)
             for kind, concurrency, context in conditions:
                 name = f"{kind}-c{concurrency}-ctx{context}"
@@ -301,29 +438,49 @@ def main(argv=None):
                 with OwnedServer(directory, plan, args.port, context) as owned:
                     budget = check_input_budget(owned.address, plan, args.input)
                     run.save_run(directory / "input_budget.json", budget)
-                    profile_stage(command(plan, args.input.resolve(), directory, args.port, concurrency),
-                                  directory, plan, owned)
+                    profile_stage(
+                        command(plan, args.input.resolve(), directory, args.port, concurrency),
+                        directory,
+                        plan,
+                        owned,
+                    )
                     result = summarize_stage(directory, plan, concurrency, context)
                 record["stages"].append({"experiment": kind, "path": name, "result": result})
                 run.save_run(root / "experiment.json", record)
                 export_results(root, record)
                 if not result["passed"]:
-                    raise RuntimeError(f"Stopping after unacceptable condition: {result['gaps']}")
+                    raise RuntimeError(
+                        f"Stopping after unacceptable condition: {result['gaps']}"
+                    )
             record["status"] = "completed"
             data = export_results(root, record)
             if data["gaps"]:
                 raise RuntimeError(f"Comparison controls failed: {data['gaps']}")
             if args.experiment == "all":
-                run.save_run(root / "frozen_config.json", {
-                    "server_options": plan["server"], "concurrency": data["selected_concurrency"],
-                    "temperature": 0, "prompt_cache": "off", "memory_interval": plan["memory_interval"],
-                    "evidence": str(root), "scope": "Initial CPU short-prompt baseline; revalidate for other workloads",
-                })
+                run.save_run(
+                    root / "frozen_config.json",
+                    {
+                        "server_options": plan["server"],
+                        "concurrency": data["selected_concurrency"],
+                        "temperature": 0,
+                        "prompt_cache": "off",
+                        "memory_interval": plan["memory_interval"],
+                        "evidence": str(root),
+                        "scope": "Initial CPU short-prompt baseline; revalidate for other workloads",
+                    },
+                )
             run.save_run(root / "experiment.json", record)
             print(f"Experiment reports: {root / 'summary.md'}", flush=True)
             return 0
-    except (OSError, ValueError, RuntimeError, KeyError, TypeError, subprocess.SubprocessError,
-            requests.RequestException) as error:
+    except (
+        OSError,
+        ValueError,
+        RuntimeError,
+        KeyError,
+        TypeError,
+        subprocess.SubprocessError,
+        requests.RequestException,
+    ) as error:
         if record is not None:
             record["status"] = "failed"
             record["errors"].append(str(error))
@@ -336,7 +493,10 @@ def main(argv=None):
             record["status"] = "interrupted"
             run.save_run(root / "experiment.json", record)
             export_results(root, record)
-        print("Experiment interrupted; partial evidence retained and owned server cleanup attempted.", file=sys.stderr)
+        print(
+            "Experiment interrupted; partial evidence retained and owned server cleanup attempted.",
+            file=sys.stderr,
+        )
         return 130
 
 

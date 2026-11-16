@@ -38,7 +38,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	address := flag.String("listen", "", "Override configured listen address (loopback only)")
+	address := flag.String("listen", "", "Override configured listen address; wildcard requires --allow-remote-listen")
 	configPath := flag.String("config", "", "Combined gateway/model/quota JSON; defaults to built-in local-llm registration")
 	configDir := flag.String("config-dir", defaultDir, "Directory containing api-keys.json")
 	quotaPath := flag.String("quota-config", "", "Quota JSON file; defaults to built-in local-llm settings. SIGHUP reloads this file.")
@@ -46,9 +46,18 @@ func main() {
 	requestTimeout := flag.Duration("request-timeout", proxyOptions.RequestTimeout, "Overall chat request limit, including validation")
 	idleTimeout := flag.Duration("backend-idle-timeout", proxyOptions.IdleTimeout, "Maximum wait for backend body data")
 	writeTimeout := flag.Duration("client-write-timeout", proxyOptions.WriteTimeout, "Maximum wait for each client write")
+	allowRemoteListen := flag.Bool("allow-remote-listen", false, "Allow explicit --listen 0.0.0.0:PORT for container networking")
+	shutdownTimeout := flag.Duration("shutdown-timeout", 5*time.Second, "Grace period for in-flight requests during shutdown")
 	flag.Parse()
 	if flag.NArg() != 0 {
 		log.Fatal("unexpected positional arguments")
+	}
+	if *shutdownTimeout <= 0 || *shutdownTimeout > 30*time.Minute {
+		log.Fatal("shutdown-timeout must be greater than zero and at most 30m")
+	}
+	configuredAddress, exposedAddress, err := listenerAddresses(*address, *allowRemoteListen)
+	if err != nil {
+		log.Fatal(err)
 	}
 	keyStore, err := auth.Open(*configDir)
 	if err != nil {
@@ -61,7 +70,7 @@ func main() {
 	if err := proxyOptions.Validate(); err != nil {
 		log.Fatal(err)
 	}
-	handler, listen, reloadConfig, err := configureHandler(keyStore, *configPath, *quotaPath, *address, proxyOptions)
+	handler, listen, reloadConfig, err := configureHandler(keyStore, *configPath, *quotaPath, configuredAddress, proxyOptions)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -75,6 +84,11 @@ func main() {
 		reloadMu.Lock()
 		defer reloadMu.Unlock()
 		return loadConfig()
+	}
+	// Configuration and runtime URLs remain loopback-only. Only the gateway's
+	// actual socket can be exposed through the explicit container option.
+	if exposedAddress != "" {
+		listen = exposedAddress
 	}
 	listener, err := net.Listen("tcp", listen)
 	if err != nil {
@@ -119,7 +133,10 @@ func main() {
 			}
 			return
 		case <-ctx.Done():
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if waiting, ok := handler.(interface{ StopWaiting() }); ok {
+				waiting.StopWaiting()
+			}
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), *shutdownTimeout)
 			defer cancel()
 			if err := server.Shutdown(shutdownCtx); err != nil {
 				_ = server.Close()
@@ -141,11 +158,11 @@ func configureHandler(verifier api.Authenticator, configPath, quotaPath, address
 		if err != nil {
 			return nil, "", nil, err
 		}
-		c, err := quota.Load(path)
+		config, err := quota.Load(path)
 		if err != nil {
 			return nil, "", nil, err
 		}
-		q, err := quota.New(c, nil)
+		quotaManager, err := quota.New(config, nil)
 		if err != nil {
 			return nil, "", nil, err
 		}
@@ -153,11 +170,11 @@ func configureHandler(verifier api.Authenticator, configPath, quotaPath, address
 			address = "127.0.0.1:8000"
 		}
 		log.Print("Legacy --quota-config mode has no model registry or model-budget validation; use --config for GATE-04")
-		logQuotaLimits(c)
-		return api.NewHandler(verifier, q), address, func() error {
+		logQuotaLimits(config)
+		return api.NewHandler(verifier, quotaManager), address, func() error {
 			updated, err := quota.Load(path)
 			if err == nil {
-				err = q.Reconfigure(updated)
+				err = quotaManager.Reconfigure(updated)
 			}
 			if err == nil {
 				logQuotaLimits(updated)
@@ -174,20 +191,20 @@ func configureHandler(verifier api.Authenticator, configPath, quotaPath, address
 		}
 	}
 	load := func() (registry.Config, error) {
-		c := registry.Default()
+		config := registry.Default()
 		var err error
 		if path != "" {
-			c, err = registry.Load(path)
+			config, err = registry.Load(path)
 			if err != nil {
-				return c, err
+				return config, err
 			}
 		}
 		if address != "" {
-			c.Gateway.Listen = address
+			config.Gateway.Listen = address
 		}
-		return c, c.Validate()
+		return config, config.Validate()
 	}
-	c, err := load()
+	config, err := load()
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -195,18 +212,18 @@ func configureHandler(verifier api.Authenticator, configPath, quotaPath, address
 	if len(options) > 0 {
 		proxyOptions = options[0]
 	}
-	h, err := api.NewRegisteredHandlerWithOptions(verifier, c, nil, proxyOptions)
+	handler, err := api.NewRegisteredHandlerWithOptions(verifier, config, nil, proxyOptions)
 	if err != nil {
 		return nil, "", nil, err
 	}
-	logQuotaLimits(c.QuotaConfig())
-	return h, c.Gateway.Listen, func() error {
+	logQuotaLimits(config.QuotaConfig())
+	return handler, config.Gateway.Listen, func() error {
 		if path == "" {
 			return fmt.Errorf("no --config file supplied; built-in registrations remain active")
 		}
 		updated, err := load()
 		if err == nil {
-			err = h.Reload(updated)
+			err = handler.Reload(updated)
 		}
 		if err == nil {
 			logQuotaLimits(updated.QuotaConfig())
@@ -215,9 +232,9 @@ func configureHandler(verifier api.Authenticator, configPath, quotaPath, address
 	}, nil
 }
 
-func logQuotaLimits(c quota.Config) {
-	g, _ := c.EffectiveGlobal() // Only called after validation.
+func logQuotaLimits(config quota.Config) {
+	globalLimits, _ := config.EffectiveGlobal() // Only called after validation.
 	log.Printf("Quota limits: user=%d requests/%ds, %d tokens/%ds; global=%d requests/%ds, %d tokens/%ds (single process)",
-		c.User.Requests, c.RequestWindowSeconds, c.User.Tokens, c.TokenWindowSeconds,
-		g.Requests, c.RequestWindowSeconds, g.Tokens, c.TokenWindowSeconds)
+		config.User.Requests, config.RequestWindowSeconds, config.User.Tokens, config.TokenWindowSeconds,
+		globalLimits.Requests, config.RequestWindowSeconds, globalLimits.Tokens, config.TokenWindowSeconds)
 }

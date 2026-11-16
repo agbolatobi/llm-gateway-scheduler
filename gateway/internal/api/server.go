@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"llm-gateway-scheduler/gateway/internal/auth"
+	"llm-gateway-scheduler/gateway/internal/chatui"
 )
 
 const MaxBodyBytes = 1 << 20 // 1 MiB, including trailing input.
@@ -48,141 +49,144 @@ func NewHandler(verifier Authenticator, quotas QuotaChecker) http.Handler {
 type chatHandler func(http.ResponseWriter, *http.Request, ChatRequest)
 
 func newHandler(verifier Authenticator, quotas QuotaChecker, afterQuota chatHandler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		if requiresAuthentication(r.URL.Path) {
+	return http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		if chatui.Serve(responseWriter, request) {
+			return
+		}
+		responseWriter.Header().Set("Cache-Control", "no-store")
+		if requiresAuthentication(request.URL.Path) {
 			var ok bool
-			r, ok = authenticate(w, r, verifier)
+			request, ok = authenticate(responseWriter, request, verifier)
 			if !ok {
 				return
 			}
 		}
-		switch r.URL.Path {
+		switch request.URL.Path {
 		case HealthPath:
-			if !requireMethod(w, r, http.MethodGet) {
+			if !requireMethod(responseWriter, request, http.MethodGet) {
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+			writeJSON(responseWriter, http.StatusOK, map[string]string{"status": "ok"})
 		case ChatCompletionsPath:
-			if !requireMethod(w, r, http.MethodPost) {
+			if !requireMethod(responseWriter, request, http.MethodPost) {
 				return
 			}
-			chat(w, r, quotas, afterQuota)
+			chat(responseWriter, request, quotas, afterQuota)
 		case ModelsPath:
-			if !requireMethod(w, r, http.MethodGet) {
+			if !requireMethod(responseWriter, request, http.MethodGet) {
 				return
 			}
-			writeError(w, http.StatusNotImplemented, "not_implemented", "The model registry is not implemented.", "")
+			writeError(responseWriter, http.StatusNotImplemented, "not_implemented", "The model registry is not implemented.", "")
 		default:
-			writeError(w, http.StatusNotFound, "not_found", "Endpoint not found.", "")
+			writeError(responseWriter, http.StatusNotFound, "not_found", "Endpoint not found.", "")
 		}
 	})
 }
 
-func authenticate(w http.ResponseWriter, r *http.Request, verifier Authenticator) (*http.Request, bool) {
-	values := r.Header.Values("Authorization")
+func authenticate(responseWriter http.ResponseWriter, request *http.Request, verifier Authenticator) (*http.Request, bool) {
+	values := request.Header.Values("Authorization")
 	if len(values) != 1 {
-		unauthorized(w)
-		return r, false
+		unauthorized(responseWriter)
+		return request, false
 	}
 	parts := strings.Fields(values[0])
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-		unauthorized(w)
-		return r, false
+		unauthorized(responseWriter)
+		return request, false
 	}
 	if verifier == nil {
-		writeError(w, http.StatusServiceUnavailable, "authentication_unavailable", "API-key verification is temporarily unavailable.", "")
-		return r, false
+		writeError(responseWriter, http.StatusServiceUnavailable, "authentication_unavailable", "API-key verification is temporarily unavailable.", "")
+		return request, false
 	}
 	principal, err := verifier.Verify(parts[1])
 	if errors.Is(err, auth.ErrInvalidKey) {
-		unauthorized(w)
-		return r, false
+		unauthorized(responseWriter)
+		return request, false
 	}
 	if err != nil || principal.UserID == "" || principal.KeyID == "" {
-		writeError(w, http.StatusServiceUnavailable, "authentication_unavailable", "API-key verification is temporarily unavailable.", "")
-		return r, false
+		writeError(responseWriter, http.StatusServiceUnavailable, "authentication_unavailable", "API-key verification is temporarily unavailable.", "")
+		return request, false
 	}
-	if trace := traceFrom(r.Context()); trace != nil {
+	if trace := requestTraceFromContext(request.Context()); trace != nil {
 		trace.user = principal.UserID
 	}
-	return r.WithContext(context.WithValue(r.Context(), principalContextKey{}, principal)), true
+	return request.WithContext(context.WithValue(request.Context(), principalContextKey{}, principal)), true
 }
 
-func unauthorized(w http.ResponseWriter) {
-	w.Header().Set("WWW-Authenticate", `Bearer realm="llm-gateway"`)
-	writeJSON(w, http.StatusUnauthorized, ErrorResponse{Error: APIError{
+func unauthorized(responseWriter http.ResponseWriter) {
+	responseWriter.Header().Set("WWW-Authenticate", `Bearer realm="llm-gateway"`)
+	writeJSON(responseWriter, http.StatusUnauthorized, ErrorResponse{Error: APIError{
 		Message: "A valid API key is required. Use Authorization: Bearer <api_key>.",
 		Type:    "authentication_error", Code: "invalid_api_key",
 	}})
 }
 
-func requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {
-	if r.Method == method {
+func requireMethod(responseWriter http.ResponseWriter, request *http.Request, method string) bool {
+	if request.Method == method {
 		return true
 	}
-	w.Header().Set("Allow", method)
-	writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Use "+method+" for this endpoint.", "")
+	responseWriter.Header().Set("Allow", method)
+	writeError(responseWriter, http.StatusMethodNotAllowed, "method_not_allowed", "Use "+method+" for this endpoint.", "")
 	return false
 }
 
-func chat(w http.ResponseWriter, r *http.Request, quotas QuotaChecker, afterQuota chatHandler) {
-	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if err != nil || mediaType != "application/json" || r.Header.Get("Content-Encoding") != "" {
-		writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "Send an uncompressed application/json body.", "")
+func chat(responseWriter http.ResponseWriter, httpRequest *http.Request, quotas QuotaChecker, afterQuota chatHandler) {
+	mediaType, _, err := mime.ParseMediaType(httpRequest.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" || httpRequest.Header.Get("Content-Encoding") != "" {
+		writeError(responseWriter, http.StatusUnsupportedMediaType, "unsupported_media_type", "Send an uncompressed application/json body.", "")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, MaxBodyBytes)
-	defer r.Body.Close()
-	decoder := json.NewDecoder(r.Body)
+	httpRequest.Body = http.MaxBytesReader(responseWriter, httpRequest.Body, MaxBodyBytes)
+	defer httpRequest.Body.Close()
+	decoder := json.NewDecoder(httpRequest.Body)
 	decoder.DisallowUnknownFields()
 	var request *ChatRequest
 	if err := decoder.Decode(&request); err != nil {
-		decodeError(w, err)
+		decodeError(responseWriter, err)
 		return
 	}
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
-		decodeError(w, err)
+		decodeError(responseWriter, err)
 		return
 	}
 	if request == nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "The body must be a JSON object.", "")
+		writeError(responseWriter, http.StatusBadRequest, "invalid_request", "The body must be a JSON object.", "")
 		return
 	}
-	if param, message := validate(*request); message != "" {
-		writeError(w, http.StatusBadRequest, "invalid_request", message, param)
+	if param, message := validateChatRequest(*request); message != "" {
+		writeError(responseWriter, http.StatusBadRequest, "invalid_request", message, param)
 		return
 	}
-	if !checkQuota(w, r, quotas) {
+	if !checkQuota(responseWriter, httpRequest, quotas) {
 		return
 	}
-	afterQuota(w, r, *request)
+	afterQuota(responseWriter, httpRequest, *request)
 }
 
-func inferenceNotImplemented(w http.ResponseWriter, _ *http.Request, _ ChatRequest) {
-	writeError(w, http.StatusNotImplemented, "not_implemented", "Chat inference is not implemented. This endpoint validates requests and checks quotas only.", "")
+func inferenceNotImplemented(responseWriter http.ResponseWriter, request *http.Request, chatRequest ChatRequest) {
+	writeError(responseWriter, http.StatusNotImplemented, "not_implemented", "Chat inference is not implemented. This endpoint validates requests and checks quotas only.", "")
 }
 
-func decodeError(w http.ResponseWriter, err error) {
+func decodeError(responseWriter http.ResponseWriter, err error) {
 	var sizeError *http.MaxBytesError
 	if errors.As(err, &sizeError) {
-		writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "Request body exceeds 1 MiB.", "")
+		writeError(responseWriter, http.StatusRequestEntityTooLarge, "body_too_large", "Request body exceeds 1 MiB.", "")
 		return
 	}
 	// Do not echo decoder errors: unknown field names can contain client secrets.
-	writeError(w, http.StatusBadRequest, "invalid_json", "Send one JSON object with supported fields and field types.", "")
+	writeError(responseWriter, http.StatusBadRequest, "invalid_json", "Send one JSON object with supported fields and field types.", "")
 }
 
-func validate(r ChatRequest) (string, string) {
-	if strings.TrimSpace(r.Model) == "" {
+func validateChatRequest(chatRequest ChatRequest) (string, string) {
+	if strings.TrimSpace(chatRequest.Model) == "" {
 		return "model", "model must be a non-empty string."
 	}
-	if len(r.Messages) == 0 {
+	if len(chatRequest.Messages) == 0 {
 		return "messages", "messages must contain at least one text message."
 	}
-	for i, message := range r.Messages {
-		param := fmt.Sprintf("messages[%d]", i)
+	for messageIndex, message := range chatRequest.Messages {
+		param := fmt.Sprintf("messages[%d]", messageIndex)
 		switch message.Role {
 		case "system", "developer", "user", "assistant":
 		default:
@@ -192,28 +196,28 @@ func validate(r ChatRequest) (string, string) {
 			return param + ".content", "content must be a text string; null and multimodal content are unsupported."
 		}
 	}
-	if r.MaxTokens != nil && r.MaxCompletionTokens != nil {
+	if chatRequest.MaxTokens != nil && chatRequest.MaxCompletionTokens != nil {
 		return "max_completion_tokens", "Use max_completion_tokens or max_tokens, not both."
 	}
-	if r.MaxTokens != nil && *r.MaxTokens < 1 {
+	if chatRequest.MaxTokens != nil && *chatRequest.MaxTokens < 1 {
 		return "max_tokens", "max_tokens must be positive."
 	}
-	if r.MaxCompletionTokens != nil && *r.MaxCompletionTokens < 1 {
+	if chatRequest.MaxCompletionTokens != nil && *chatRequest.MaxCompletionTokens < 1 {
 		return "max_completion_tokens", "max_completion_tokens must be positive."
 	}
-	if r.Temperature != nil && (*r.Temperature < 0 || *r.Temperature > 2) {
+	if chatRequest.Temperature != nil && (*chatRequest.Temperature < 0 || *chatRequest.Temperature > 2) {
 		return "temperature", "temperature must be between 0 and 2."
 	}
-	if r.StreamOptions != nil && !r.Stream {
+	if chatRequest.StreamOptions != nil && !chatRequest.Stream {
 		return "stream_options", "stream_options requires stream: true."
 	}
-	if r.RequestClass != "" && r.RequestClass != "interactive" && r.RequestClass != "background" {
+	if chatRequest.RequestClass != "" && chatRequest.RequestClass != "interactive" && chatRequest.RequestClass != "background" {
 		return "request_class", "request_class must be interactive or background."
 	}
 	return "", ""
 }
 
-func writeError(w http.ResponseWriter, status int, code, message, param string) {
+func writeError(responseWriter http.ResponseWriter, status int, code, message, param string) {
 	var field *string
 	if param != "" {
 		field = &param
@@ -222,11 +226,11 @@ func writeError(w http.ResponseWriter, status int, code, message, param string) 
 	if status >= 500 {
 		kind = "server_error"
 	}
-	writeJSON(w, status, ErrorResponse{Error: APIError{Message: message, Type: kind, Param: field, Code: code}})
+	writeJSON(responseWriter, status, ErrorResponse{Error: APIError{Message: message, Type: kind, Param: field, Code: code}})
 }
 
-func writeJSON(w http.ResponseWriter, status int, value any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
+func writeJSON(responseWriter http.ResponseWriter, status int, value any) {
+	responseWriter.Header().Set("Content-Type", "application/json")
+	responseWriter.WriteHeader(status)
+	_ = json.NewEncoder(responseWriter).Encode(value)
 }

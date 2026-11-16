@@ -5,3 +5,14 @@ __pycache__/
 # Local project references (not for version control).
 /project-requirements.html
 /README.local.md
+
+# Local Terraform inputs and generated files. Keep examples and lock files tracked.
+/infra/variables/
+.terraform/
+*.tfvars
+*.tfvars.json
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+/infra/**/crash*.log

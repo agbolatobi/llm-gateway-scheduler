@@ -19,7 +19,7 @@ from stop_server import _find_server
 def process_start(pid):
     # Field 22, after the parenthesized comm field (which may contain spaces).
     text = (Path("/proc") / str(pid) / "stat").read_text()
-    return int(text[text.rfind(")") + 2:].split()[19])
+    return int(text[text.rfind(")") + 2 :].split()[19])
 
 
 def find_target(base_url):
@@ -61,9 +61,15 @@ def gpu_memory_mib(executable, pid):
         return None, "nvidia_smi_not_found"
     try:
         result = subprocess.run(
-            [executable, "--query-compute-apps=pid,gpu_uuid,used_gpu_memory",
-             "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=1, check=False,
+            [
+                executable,
+                "--query-compute-apps=pid,gpu_uuid,used_gpu_memory",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=1,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         return None, "gpu_query_timeout"
@@ -96,8 +102,11 @@ def gpu_memory_mib(executable, pid):
 
 def counter_summary(samples, name):
     values = [sample[name + "_mib"] for sample in samples if sample[name + "_mib"] is not None]
-    reasons = Counter(sample[name + "_unavailable_reason"] for sample in samples
-                      if sample[name + "_unavailable_reason"])
+    reasons = Counter(
+        sample[name + "_unavailable_reason"]
+        for sample in samples
+        if sample[name + "_unavailable_reason"]
+    )
     return {
         "baseline_mib": samples[0][name + "_mib"] if samples else None,
         "peak_mib": max(values) if values else None,
@@ -121,8 +130,11 @@ class MemoryMonitor:
         self.start_ticks = None
         self.cpu_reason = None
         # WSL's NVIDIA process namespace/counters cannot reliably attribute this PID.
-        self.gpu_reason = ("wsl_process_vram_unsupported"
-                           if "microsoft" in platform.release().lower() else None)
+        self.gpu_reason = (
+            "wsl_process_vram_unsupported"
+            if "microsoft" in platform.release().lower()
+            else None
+        )
         if self.pid is not None:
             try:
                 self.start_ticks = process_start(self.pid)
@@ -166,11 +178,16 @@ class MemoryMonitor:
                 if not self._same_process():
                     ram = vram = None
                     ram_reason = vram_reason = "server_exited_or_identity_changed"
-        self.samples.append({
-            "start_perf_ns": begin, "end_perf_ns": time.perf_counter_ns(),
-            "ram_mib": ram, "vram_mib": vram,
-            "ram_unavailable_reason": ram_reason, "vram_unavailable_reason": vram_reason,
-        })
+        self.samples.append(
+            {
+                "start_perf_ns": begin,
+                "end_perf_ns": time.perf_counter_ns(),
+                "ram_mib": ram,
+                "vram_mib": vram,
+                "ram_unavailable_reason": ram_reason,
+                "vram_unavailable_reason": vram_reason,
+            }
+        )
 
     def _loop(self):
         while not self.stop.wait(self.interval):
@@ -189,9 +206,13 @@ class MemoryMonitor:
 
     def summary(self):
         return {
-            "schema_version": 1, "unit": "MiB", "scope": "server_process_case",
-            "server_pid": self.pid, "server_start_ticks": self.start_ticks,
-            "clock": "perf_counter_ns", "sampling_interval_seconds": self.interval,
+            "schema_version": 1,
+            "unit": "MiB",
+            "scope": "server_process_case",
+            "server_pid": self.pid,
+            "server_start_ticks": self.start_ticks,
+            "clock": "perf_counter_ns",
+            "sampling_interval_seconds": self.interval,
             "window": "around AIPerf case, including setup, warm-up and teardown; excludes model startup",
             "ram_source": "/proc/PID/status VmRSS (resident, includes shared/file-backed pages)",
             "vram_source": "nvidia-smi per-PID used_gpu_memory, summed across GPU UUIDs",
@@ -215,8 +236,11 @@ class MemoryMonitor:
     def request_fields(self, row):
         start, end = row.get("request_start_perf_ns"), row.get("completion_perf_ns")
         valid = type(start) is int and type(end) is int and 0 <= start <= end
-        samples = [sample for sample in self.samples if valid
-                   and start <= sample["start_perf_ns"] <= sample["end_perf_ns"] <= end]
+        samples = [
+            sample
+            for sample in self.samples
+            if valid and start <= sample["start_perf_ns"] <= sample["end_perf_ns"] <= end
+        ]
         result = {
             "memory_scope": "server_process_request_window",
             "memory_server_pid": self.pid,
@@ -233,22 +257,32 @@ class MemoryMonitor:
                     reason = "request_window_unavailable"
                 elif not samples:
                     reason = "no_samples_in_request_window"
-            result.update({
-                f"peak_{name}_mib": metric["peak_mib"],
-                f"{name}_sample_count": metric["sample_count"],
-                f"{name}_unavailable_sample_count": metric["unavailable_sample_count"],
-                f"{name}_measurement_status": metric["status"],
-                f"{name}_unavailable_reason": reason,
-            })
+            result.update(
+                {
+                    f"peak_{name}_mib": metric["peak_mib"],
+                    f"{name}_sample_count": metric["sample_count"],
+                    f"{name}_unavailable_sample_count": metric["unavailable_sample_count"],
+                    f"{name}_measurement_status": metric["status"],
+                    f"{name}_unavailable_reason": reason,
+                }
+            )
         return result
 
 
 def uncollected_fields():
-    result = {"memory_scope": "server_process_request_window", "memory_server_pid": None,
-              "memory_sampling_interval_seconds": None}
+    result = {
+        "memory_scope": "server_process_request_window",
+        "memory_server_pid": None,
+        "memory_sampling_interval_seconds": None,
+    }
     for name in ("ram", "vram"):
-        result.update({f"peak_{name}_mib": None, f"{name}_sample_count": 0,
-                       f"{name}_unavailable_sample_count": 0,
-                       f"{name}_measurement_status": "unavailable",
-                       f"{name}_unavailable_reason": "memory_not_collected"})
+        result.update(
+            {
+                f"peak_{name}_mib": None,
+                f"{name}_sample_count": 0,
+                f"{name}_unavailable_sample_count": 0,
+                f"{name}_measurement_status": "unavailable",
+                f"{name}_unavailable_reason": "memory_not_collected",
+            }
+        )
     return result

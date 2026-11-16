@@ -140,7 +140,7 @@ class PDFReportTests(unittest.TestCase):
         self.assertTrue(report.export_pdf(self.root).is_file())
 
     def test_pdf_is_created_without_changing_sources(self):
-        before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
+        before = {report_path: report_path.read_bytes() for report_path in self.root.rglob("*") if report_path.is_file()}
         with patch("subprocess.run") as process:
             destination = report.export_pdf(self.root)
         process.assert_not_called()

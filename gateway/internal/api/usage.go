@@ -8,14 +8,14 @@ type usageCollector struct {
 	fields           map[string]int64
 }
 
-func (u *usageCollector) observe(path []string, value any) {
+func (usage *usageCollector) observe(path []string, value any) {
 	if len(path) == 0 || path[0] != "usage" {
 		return
 	}
 	if len(path) == 1 {
-		u.present = true
+		usage.present = true
 		if value != json.Delim('{') {
-			u.invalid = true
+			usage.invalid = true
 		}
 		return
 	}
@@ -24,32 +24,32 @@ func (u *usageCollector) observe(path []string, value any) {
 	}
 	switch path[1] {
 	case "prompt_tokens", "completion_tokens", "total_tokens":
-		n, ok := value.(json.Number)
+		number, ok := value.(json.Number)
 		if !ok {
-			u.invalid = true
+			usage.invalid = true
 			return
 		}
-		i, err := n.Int64()
-		if err != nil || i < 0 {
-			u.invalid = true
+		tokenCount, err := number.Int64()
+		if err != nil || tokenCount < 0 {
+			usage.invalid = true
 			return
 		}
-		if u.fields == nil {
-			u.fields = make(map[string]int64)
+		if usage.fields == nil {
+			usage.fields = make(map[string]int64)
 		}
-		u.fields[path[1]] = i
+		usage.fields[path[1]] = tokenCount
 	}
 }
-func (u usageCollector) validated(input, cap int64) *Usage {
-	if !u.present || u.invalid || len(u.fields) != 3 {
+func (usage usageCollector) validated(input, outputTokenLimit int64) *Usage {
+	if !usage.present || usage.invalid || len(usage.fields) != 3 {
 		return nil
 	}
-	p, c, total := u.fields["prompt_tokens"], u.fields["completion_tokens"], u.fields["total_tokens"]
+	promptTokens, completionTokens, total := usage.fields["prompt_tokens"], usage.fields["completion_tokens"], usage.fields["total_tokens"]
 	// Require agreement with chat-template tokenization, not a cached-prefill count.
-	if p != input || c > cap || total != p+c {
+	if promptTokens != input || completionTokens > outputTokenLimit || total != promptTokens+completionTokens {
 		return nil
 	}
-	return &Usage{PromptTokens: int(p), CompletionTokens: int(c), TotalTokens: int(total)}
+	return &Usage{PromptTokens: int(promptTokens), CompletionTokens: int(completionTokens), TotalTokens: int(total)}
 }
 
 type responseFacts struct {

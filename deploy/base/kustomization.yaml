@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: llm-gateway
+resources:
+  - namespace.json
+  - account.json
+  - service.json
+  - deployment.json
+  - keys-pvc.json
+  - models-pvc.json
+  - network-policy.json
+configMapGenerator:
+  - name: gateway-config
+    files:
+      - gateway.config.json

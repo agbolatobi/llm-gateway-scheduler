@@ -51,25 +51,25 @@ func checkControlSocket(path string) error {
 }
 
 func reloadHandler(reload func() error) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "no-store")
-		if r.URL.Path != "/reload" {
-			http.NotFound(w, r)
+	return http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		responseWriter.Header().Set("Content-Type", "application/json")
+		responseWriter.Header().Set("Cache-Control", "no-store")
+		if request.URL.Path != "/reload" {
+			http.NotFound(responseWriter, request)
 			return
 		}
-		if r.Method != http.MethodPost {
-			w.Header().Set("Allow", http.MethodPost)
-			w.WriteHeader(http.StatusMethodNotAllowed)
+		if request.Method != http.MethodPost {
+			responseWriter.Header().Set("Allow", http.MethodPost)
+			responseWriter.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
 		if err := reload(); err != nil {
 			log.Printf("Configuration reload rejected; previous configuration retained: %v", err)
-			w.WriteHeader(http.StatusConflict)
-			json.NewEncoder(w).Encode(reloadResponse{Message: "Reload rejected; previous configuration retained: " + err.Error()})
+			responseWriter.WriteHeader(http.StatusConflict)
+			json.NewEncoder(responseWriter).Encode(reloadResponse{Message: "Reload rejected; previous configuration retained: " + err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(reloadResponse{OK: true, Message: "Gateway configuration reloaded. Quota usage preserved; model processes unchanged."})
+		json.NewEncoder(responseWriter).Encode(reloadResponse{OK: true, Message: "Gateway configuration reloaded. Quota usage preserved; model processes unchanged."})
 	})
 }
 

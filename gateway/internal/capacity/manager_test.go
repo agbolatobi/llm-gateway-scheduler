@@ -7,74 +7,77 @@ import (
 	"testing"
 )
 
-func TestAtomicLimitsAndIdempotentRelease(t *testing.T) {
-	m := New(2)
-	a, err := m.Acquire("a")
+func TestAtomicLimitsAndIdempotentRelease(testContext *testing.T) {
+	capacityManager := New(2)
+	firstLease, err := capacityManager.Acquire("a")
 	if err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
-	if _, err := m.Acquire("a"); err != ErrFull {
-		t.Fatal(err)
+	if _, err := capacityManager.Acquire("a"); err != ErrFull {
+		testContext.Fatal(err)
 	}
-	b, err := m.Acquire("b")
+	secondLease, err := capacityManager.Acquire("b")
 	if err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
-	if _, err := m.Acquire("c"); err != ErrFull {
-		t.Fatal(err)
+	if _, err := capacityManager.Acquire("c"); err != ErrFull {
+		testContext.Fatal(err)
 	}
-	m.SetLimit(1)
-	a.Release()
-	a.Release()
-	if _, err := m.Acquire("c"); err != ErrFull {
-		t.Fatal("limit reduction discarded active work", err)
+	capacityManager.SetLimit(1)
+	firstLease.Release()
+	firstLease.Release()
+	if _, err := capacityManager.Acquire("c"); err != ErrFull {
+		testContext.Fatal("limit reduction discarded active work", err)
 	}
-	b.Release()
-	c, err := m.Acquire("c")
+	secondLease.Release()
+	thirdLease, err := capacityManager.Acquire("c")
 	if err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
-	c.Release()
+	thirdLease.Release()
 }
-func TestConcurrentAcquire(t *testing.T) {
-	m := New(1)
+func TestConcurrentAcquire(testContext *testing.T) {
+	capacityManager := New(1)
 	var wins atomic.Int32
 	var wg sync.WaitGroup
-	for i := 0; i < 64; i++ {
+	for index := 0; index < 64; index++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := m.Acquire("a"); err == nil {
+			if _, err := capacityManager.Acquire("a"); err == nil {
 				wins.Add(1)
 			}
 		}()
 	}
 	wg.Wait()
 	if wins.Load() != 1 {
-		t.Fatal(wins.Load())
+		testContext.Fatal(wins.Load())
 	}
 }
-func TestQuarantineRequiresProof(t *testing.T) {
-	m := New(1)
-	l, _ := m.Acquire("a")
-	l.Quarantine(false)
-	if m.Recover(context.Background(), "a", func(context.Context) (bool, error) { t.Fatal("ambiguous dispatch was probed"); return true, nil }) {
-		t.Fatal("unknown dispatch recovered")
+func TestQuarantineRequiresProof(testContext *testing.T) {
+	capacityManager := New(1)
+	lease, _ := capacityManager.Acquire("a")
+	lease.Quarantine(false)
+	if capacityManager.Recover(context.Background(), "a", func(context.Context) (bool, error) {
+		testContext.Fatal("ambiguous dispatch was probed")
+		return true, nil
+	}) {
+		testContext.Fatal("unknown dispatch recovered")
 	}
-	if _, err := m.Acquire("a"); err != ErrUnconfirmed {
-		t.Fatal(err)
+	if _, err := capacityManager.Acquire("a"); err != ErrUnconfirmed {
+		testContext.Fatal(err)
 	}
-	l.Release()
-	l, _ = m.Acquire("a")
-	l.Quarantine(true)
-	if m.Recover(context.Background(), "a", func(context.Context) (bool, error) { return false, nil }) {
-		t.Fatal("busy recovered")
+	lease.Release()
+	lease, _ = capacityManager.Acquire("a")
+	lease.Quarantine(true)
+	if capacityManager.Recover(context.Background(), "a", func(context.Context) (bool, error) { return false, nil }) {
+		testContext.Fatal("busy recovered")
 	}
-	if !m.Recover(context.Background(), "a", func(context.Context) (bool, error) { return true, nil }) {
-		t.Fatal("idle not recovered")
+	if !capacityManager.Recover(context.Background(), "a", func(context.Context) (bool, error) { return true, nil }) {
+		testContext.Fatal("idle not recovered")
 	}
-	l.Release()
-	if _, err := m.Acquire("b"); err != nil {
-		t.Fatal(err)
+	lease.Release()
+	if _, err := capacityManager.Acquire("b"); err != nil {
+		testContext.Fatal(err)
 	}
 }

@@ -16,11 +16,11 @@ from test_latency import pair, write_jsonl
 
 def make_comparison(root):
     source = root / "source.json"
-    data = {"prompts": [{"id": f"p{i}", "prompt": f"Synthetic engineering input {i}."}
-                        for i in range(3)],
+    data = {"prompts": [{"id": f"p{index}", "prompt": f"Synthetic engineering input {index}."}
+                        for index in range(3)],
             "test_config": {"repetitions": 3, "concurrency": 1},
-            "test_cases": [{"id": f"p{i}_{cap}", "prompt_id": f"p{i}", "max_tokens": cap}
-                           for i in range(3) for cap in (64, 256)]}
+            "test_cases": [{"id": f"p{index}_{cap}", "prompt_id": f"p{index}", "max_tokens": cap}
+                           for index in range(3) for cap in (64, 256)]}
     source.write_text(json.dumps(data))
     workload = prepare.load_workload(source)
     output = root / "run"
@@ -110,12 +110,12 @@ class RuntimeTests(unittest.TestCase):
     def test_snapshot_rejects_changed_or_missing_controls(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary)
-            a = {"status": "available", "fingerprint": "a"}
-            b = {"status": "available", "fingerprint": "b"}
-            self.assertFalse(runtime.save_snapshot(path, a, b)["unchanged"])
+            first_result = {"status": "available", "fingerprint": "a"}
+            second_result = {"status": "available", "fingerprint": "b"}
+            self.assertFalse(runtime.save_snapshot(path, first_result, second_result)["unchanged"])
             original = (path / "runtime_snapshot.json").read_bytes()
             with self.assertRaises(FileExistsError):
-                runtime.save_snapshot(path, a, a)
+                runtime.save_snapshot(path, first_result, first_result)
             self.assertEqual((path / "runtime_snapshot.json").read_bytes(), original)
 
 

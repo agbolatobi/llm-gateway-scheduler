@@ -12,7 +12,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 
-from client import models, server
+from client import models, process_records, server
 from client.model_config import ModelConfig, validate
 
 def fixture():
@@ -63,14 +63,14 @@ class ModelsTests(unittest.TestCase):
 
     def test_invalid_registrations(self):
         for change in (
-            lambda d: d.update(version=True),
-            lambda d: d["models"][0].update(aliases="alias"),
-            lambda d: d["models"][0]["backend"].update(base_url="http://example.com:8080"),
-            lambda d: d["models"][0]["backend"].update(base_url="http://127.0.0.1:8000"),
-            lambda d: d["models"][0]["launch"].update(parallel=2),
-            lambda d: d["models"][0].update(max_output_tokens=4096),
-            lambda d: d["models"].append(copy.deepcopy(d["models"][0])),
-            lambda d: d["quotas"]["user"].update(requests=0),
+            lambda configuration: configuration.update(version=True),
+            lambda configuration: configuration["models"][0].update(aliases="alias"),
+            lambda configuration: configuration["models"][0]["backend"].update(base_url="http://example.com:8080"),
+            lambda configuration: configuration["models"][0]["backend"].update(base_url="http://127.0.0.1:8000"),
+            lambda configuration: configuration["models"][0]["launch"].update(parallel=2),
+            lambda configuration: configuration["models"][0].update(max_output_tokens=4096),
+            lambda configuration: configuration["models"].append(copy.deepcopy(configuration["models"][0])),
+            lambda configuration: configuration["quotas"]["user"].update(requests=0),
         ):
             data = copy.deepcopy(self.data); change(data)
             with self.assertRaises(ValueError):
@@ -92,7 +92,7 @@ class ModelsTests(unittest.TestCase):
         self.assertEqual(models.registration_warning(config, "http://localhost:8080", "default"), "")
         self.assertEqual(models.registration_warning(config, "http://127.0.0.1:8000", "local-llm"), "")
         self.assertEqual(models.registration_warning(config, "https://remote.example", "unknown"), "")
-        with patch.object(models, "inspect", return_value=("ready", "unknown")) as probe, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as errors:
+        with patch.object(models, "inspect_runtime", return_value=("ready", "unknown")) as probe, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as errors:
             self.assertEqual(models.main(["check", "--config", str(self.path), "--base-url", "http://127.0.0.1:8082"]), 0)
             self.assertIn("unregistered", errors.getvalue())
             probe.assert_called_once()
@@ -101,12 +101,12 @@ class ModelsTests(unittest.TestCase):
     def test_explicit_start_passes_model_file_and_verification(self):
         config = self.write(); model = config.find("local-llm")
         with patch.object(server, "ensure_server_ready", return_value=None) as launch:
-            self.assertIn("reused", models.start(config, model, 10))
+            self.assertIn("reused", models.start_registered_model(config, model, 10))
         arguments = launch.call_args.kwargs
         self.assertEqual(arguments["model_file"], self.root / model["launch"]["model_file"])
         self.assertEqual(arguments["model"], model["backend"]["expected_model"])
         self.assertEqual(arguments["server_options"]["ctx_size"], 4096)
-        with patch.object(models, "inspect", return_value=("mismatch", "wrong identity")):
+        with patch.object(models, "inspect_runtime", return_value=("mismatch", "wrong identity")):
             with self.assertRaises(RuntimeError):
                 arguments["verify_ready"]()
 
@@ -114,21 +114,21 @@ class ModelsTests(unittest.TestCase):
         self.data["models"][0].pop("launch")
         config = self.write(); model = config.find("local-llm")
         with patch.object(server, "ensure_server_ready") as launch:
-            with self.assertRaises(ValueError): models.start(config, model, 1)
-            with self.assertRaises(ValueError): models.stop(config, model, 1)
+            with self.assertRaises(ValueError): models.start_registered_model(config, model, 1)
+            with self.assertRaises(ValueError): models.stop_registered_model(config, model, 1)
             launch.assert_not_called()
 
     def test_identity_retries_transient_empty_command_line(self):
-        expected = models.process_identity(os.getpid())
+        expected = models.capture_process_identity(os.getpid())
         actual_argv = (Path("/proc") / str(os.getpid()) / "cmdline").read_bytes()
-        with patch.object(Path, "read_bytes", side_effect=[b"", actual_argv]) as read, patch.object(models.time, "sleep"):
-            self.assertEqual(models.process_identity(os.getpid()), expected)
+        with patch.object(Path, "read_bytes", side_effect=[b"", actual_argv]) as read, patch.object(process_records.time, "sleep"):
+            self.assertEqual(models.capture_process_identity(os.getpid()), expected)
             self.assertEqual(read.call_count, 2)
 
     def test_identity_never_accepts_permanently_empty_command_line(self):
-        with patch.object(Path, "read_bytes", return_value=b""), patch.object(models.time, "monotonic", side_effect=[0, 2]):
+        with patch.object(Path, "read_bytes", return_value=b""), patch.object(process_records.time, "monotonic", side_effect=[0, 2]):
             with self.assertRaisesRegex(RuntimeError, "could not be verified"):
-                models.process_identity(os.getpid())
+                models.capture_process_identity(os.getpid())
 
     def test_stop_only_recorded_process_and_refuse_identity_change(self):
         if not hasattr(os, "pidfd_open"):
@@ -138,16 +138,16 @@ class ModelsTests(unittest.TestCase):
         with patch.object(server, "PROJECT_ROOT", self.root):
             process = subprocess.Popen(["/usr/bin/sleep", "60"], cwd=self.root)
             try:
-                record = models.process_identity(process.pid)
+                record = models.capture_process_identity(process.pid)
                 record.update(model_file=str(config.resolve_path(model["launch"]["model_file"])), runtime_id=model["backend"]["runtime_id"], address="http://127.0.0.1:8080")
-                path = models.record_path(model)
+                path = models.model_record_path(model)
                 bad = dict(record, start_ticks="wrong")
-                models.save_record(path, bad)
+                models.write_process_record(path, bad)
                 with self.assertRaisesRegex(RuntimeError, "identity changed"):
-                    models.stop(config, model, 1)
+                    models.stop_registered_model(config, model, 1)
                 self.assertIsNone(process.poll())
-                models.save_record(path, record)
-                self.assertIn("Stopped", models.stop(config, model, 2))
+                models.write_process_record(path, record)
+                self.assertIn("Stopped", models.stop_registered_model(config, model, 2))
                 process.wait(timeout=2)
                 self.assertFalse(path.exists())
             finally:
@@ -169,13 +169,13 @@ class ModelsTests(unittest.TestCase):
         try:
             model = copy.deepcopy(self.data["models"][0]); model.pop("launch")
             url = f"http://127.0.0.1:{backend.server_port}"
-            self.assertEqual(models.inspect(url, model=model)[0], "ready")
+            self.assertEqual(models.inspect_runtime(url, model=model)[0], "ready")
             state["identity"] = "other"
-            self.assertEqual(models.inspect(url, model=model)[0], "mismatch")
+            self.assertEqual(models.inspect_runtime(url, model=model)[0], "mismatch")
             state["identity"] = "local-llm"; state["context"] = 128
-            self.assertEqual(models.inspect(url, model=model)[0], "mismatch")
+            self.assertEqual(models.inspect_runtime(url, model=model)[0], "mismatch")
             state["redirect"] = True
-            self.assertEqual(models.inspect(url, model=model)[0], "unavailable")
+            self.assertEqual(models.inspect_runtime(url, model=model)[0], "unavailable")
         finally:
             backend.shutdown(); backend.server_close(); worker.join()
 

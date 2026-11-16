@@ -23,78 +23,82 @@ type Lease struct {
 	quarantined, recoverable, checking, released bool
 }
 
-func New(global int) *Manager          { return &Manager{limit: global, active: make(map[string]*Lease)} }
-func (m *Manager) SetLimit(global int) { m.mu.Lock(); defer m.mu.Unlock(); m.limit = global }
-func (m *Manager) Occupied(address string) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.active[address] != nil
+func New(global int) *Manager { return &Manager{limit: global, active: make(map[string]*Lease)} }
+func (capacityManager *Manager) SetLimit(global int) {
+	capacityManager.mu.Lock()
+	defer capacityManager.mu.Unlock()
+	capacityManager.limit = global
 }
-func (m *Manager) Acquire(address string) (*Lease, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if current := m.active[address]; current != nil {
+func (capacityManager *Manager) Occupied(address string) bool {
+	capacityManager.mu.Lock()
+	defer capacityManager.mu.Unlock()
+	return capacityManager.active[address] != nil
+}
+func (capacityManager *Manager) Acquire(address string) (*Lease, error) {
+	capacityManager.mu.Lock()
+	defer capacityManager.mu.Unlock()
+	if current := capacityManager.active[address]; current != nil {
 		if current.quarantined {
 			return nil, ErrUnconfirmed
 		}
 		return nil, ErrFull
 	}
-	if len(m.active) >= m.limit {
+	if len(capacityManager.active) >= capacityManager.limit {
 		return nil, ErrFull
 	}
-	l := &Lease{owner: m, address: address}
-	m.active[address] = l
-	return l, nil
+	lease := &Lease{owner: capacityManager, address: address}
+	capacityManager.active[address] = lease
+	return lease, nil
 }
-func (l *Lease) Release() {
-	if l == nil {
+func (lease *Lease) Release() {
+	if lease == nil {
 		return
 	}
-	m := l.owner
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if l.released {
+	capacityManager := lease.owner
+	capacityManager.mu.Lock()
+	defer capacityManager.mu.Unlock()
+	if lease.released {
 		return
 	}
-	l.released = true
-	if m.active[l.address] == l {
-		delete(m.active, l.address)
+	lease.released = true
+	if capacityManager.active[lease.address] == lease {
+		delete(capacityManager.active, lease.address)
 	}
 }
-func (l *Lease) Quarantine(recoverable bool) {
-	if l == nil {
+func (lease *Lease) Quarantine(recoverable bool) {
+	if lease == nil {
 		return
 	}
-	m := l.owner
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if !l.released {
-		l.quarantined = true
-		l.recoverable = recoverable
+	capacityManager := lease.owner
+	capacityManager.mu.Lock()
+	defer capacityManager.mu.Unlock()
+	if !lease.released {
+		lease.quarantined = true
+		lease.recoverable = recoverable
 	}
 }
 
 // Recover performs at most one probe on the next request for this runtime.
 // An ambiguous dispatch with no observed backend result cannot be cleared by an
 // idle snapshot: its generation request might still be arriving at the backend.
-func (m *Manager) Recover(ctx context.Context, address string, idle func(context.Context) (bool, error)) bool {
-	m.mu.Lock()
-	l := m.active[address]
-	if l == nil || !l.quarantined || !l.recoverable || l.checking {
-		m.mu.Unlock()
+func (capacityManager *Manager) Recover(ctx context.Context, address string, idle func(context.Context) (bool, error)) bool {
+	capacityManager.mu.Lock()
+	lease := capacityManager.active[address]
+	if lease == nil || !lease.quarantined || !lease.recoverable || lease.checking {
+		capacityManager.mu.Unlock()
 		return false
 	}
-	l.checking = true
-	m.mu.Unlock()
+	lease.checking = true
+	capacityManager.mu.Unlock()
 	ok, err := idle(ctx)
-	m.mu.Lock()
-	l.checking = false
-	if err == nil && ok && !l.released && m.active[address] == l {
-		l.released = true
-		delete(m.active, address)
-		m.mu.Unlock()
+	capacityManager.mu.Lock()
+	lease.checking = false
+	if err == nil && ok && !lease.released && capacityManager.active[address] == lease {
+		lease.released = true
+		delete(capacityManager.active, address)
+		capacityManager.mu.Unlock()
 		return true
 	}
-	m.mu.Unlock()
+	capacityManager.mu.Unlock()
 	return false
 }

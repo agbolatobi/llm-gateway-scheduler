@@ -14,7 +14,8 @@ FIELDS = {
 
 def valid(value, integer=False):
     return (type(value) is int if integer else type(value) in (int, float)) and (
-        math.isfinite(value) and value >= 0)
+        math.isfinite(value) and value >= 0
+    )
 
 
 def extract(raw, status, *, input_tokens=None):
@@ -24,8 +25,11 @@ def extract(raw, status, *, input_tokens=None):
         problem = "request_not_successful"
     else:
         for message in (raw or {}).get("responses", []):
-            data = [packet.get("value", "") for packet in message.get("packets", [])
-                    if packet.get("name") == "data"]
+            data = [
+                packet.get("value", "")
+                for packet in message.get("packets", [])
+                if packet.get("name") == "data"
+            ]
             payload = "\n".join(data).strip()
             if payload == "[DONE]":
                 break
@@ -57,9 +61,12 @@ def extract(raw, status, *, input_tokens=None):
         result[name + "_unavailable_reason"] = reason
     # Usage describes the whole prompt; prompt_n is only work newly evaluated.
     prompt, cached = result["backend_prompt_tokens"], result["cached_input_tokens"]
-    if (prompt is not None and cached is not None
-            and valid(input_tokens)
-            and prompt + cached != input_tokens):
+    if (
+        prompt is not None
+        and cached is not None
+        and valid(input_tokens)
+        and prompt + cached != input_tokens
+    ):
         for name in ("backend_prompt_tokens", "cached_input_tokens"):
             result[name] = None
             result[name + "_unavailable_reason"] = "backend_input_count_mismatch"
@@ -67,15 +74,28 @@ def extract(raw, status, *, input_tokens=None):
 
 
 def summarize_backend(rows, statistics):
-    measured = [row for row in rows
-                if row.get("benchmark_phase") == "profiling" and row.get("status") == "success"]
-    verification = {"successful_requests": len(measured), "uncached_requests": 0,
-                    "cached_requests": 0, "unverified_requests": 0}
+    measured = [
+        row
+        for row in rows
+        if row.get("benchmark_phase") == "profiling" and row.get("status") == "success"
+    ]
+    verification = {
+        "successful_requests": len(measured),
+        "uncached_requests": 0,
+        "cached_requests": 0,
+        "unverified_requests": 0,
+    }
     for row in measured:
-        cached, prompt, total = (row.get(key) for key in
-                                 ("cached_input_tokens", "backend_prompt_tokens", "input_tokens"))
-        if (not valid(cached, True) or not valid(prompt, True)
-                or not valid(total) or cached + prompt != total):
+        cached, prompt, total = (
+            row.get(key)
+            for key in ("cached_input_tokens", "backend_prompt_tokens", "input_tokens")
+        )
+        if (
+            not valid(cached, True)
+            or not valid(prompt, True)
+            or not valid(total)
+            or cached + prompt != total
+        ):
             verification["unverified_requests"] += 1
         elif cached == 0:
             verification["uncached_requests"] += 1
@@ -87,5 +107,6 @@ def summarize_backend(rows, statistics):
         metrics[name] = statistics(values, unit=unit)
     for name in ("input_tokens", "output_tokens"):
         metrics[name] = statistics(
-            [row[name] for row in measured if valid(row.get(name))], unit="tokens")
+            [row[name] for row in measured if valid(row.get(name))], unit="tokens"
+        )
     return metrics, verification

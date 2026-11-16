@@ -1,0 +1,4 @@
+project_id = "YOUR_PROJECT_ID"
+region = "us-central1"
+state_bucket_name = "YOUR_GLOBALLY_UNIQUE_STATE_BUCKET"
+state_operator = "user:YOU@example.com"

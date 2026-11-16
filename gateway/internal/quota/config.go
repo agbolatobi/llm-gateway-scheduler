@@ -42,54 +42,56 @@ func DefaultConfig() Config {
 
 // Load rejects unknown fields, trailing JSON, oversized files and invalid limits.
 func Load(path string) (Config, error) {
-	f, err := os.Open(path)
+	configFile, err := os.Open(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("open quota config: %w", err)
 	}
-	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, (1<<20)+1))
+	defer configFile.Close()
+	data, err := io.ReadAll(io.LimitReader(configFile, (1<<20)+1))
 	if err != nil {
 		return Config{}, err
 	}
 	if len(data) > 1<<20 {
 		return Config{}, fmt.Errorf("quota config exceeds 1 MiB")
 	}
-	d := json.NewDecoder(strings.NewReader(string(data)))
-	d.DisallowUnknownFields()
-	var c Config
-	if err := d.Decode(&c); err != nil {
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	var config Config
+	if err := decoder.Decode(&config); err != nil {
 		return Config{}, fmt.Errorf("decode quota config: %w", err)
 	}
 	var extra any
-	if err := d.Decode(&extra); err != io.EOF {
+	if err := decoder.Decode(&extra); err != io.EOF {
 		return Config{}, fmt.Errorf("quota config must contain one JSON object")
 	}
-	_, err = c.EffectiveGlobal()
-	return c, err
+	_, err = config.EffectiveGlobal()
+	return config, err
 }
 
-func validLimits(v Limits) bool {
-	return v.Requests > 0 && v.Tokens > 0 && v.Requests <= 1e15 && v.Tokens <= 1e15
+func validLimits(limits Limits) bool {
+	return limits.Requests > 0 && limits.Tokens > 0 && limits.Requests <= 1e15 && limits.Tokens <= 1e15
 }
 
-func (c Config) requestWindow() time.Duration {
-	return time.Duration(c.RequestWindowSeconds) * time.Second
+func (config Config) requestWindow() time.Duration {
+	return time.Duration(config.RequestWindowSeconds) * time.Second
 }
-func (c Config) tokenWindow() time.Duration { return time.Duration(c.TokenWindowSeconds) * time.Second }
+func (config Config) tokenWindow() time.Duration {
+	return time.Duration(config.TokenWindowSeconds) * time.Second
+}
 
-func (c Config) EffectiveGlobal() (Limits, error) {
-	if c.RequestWindowSeconds < 1 || c.RequestWindowSeconds > 86400 || c.TokenWindowSeconds < 1 || c.TokenWindowSeconds > 2592000 {
+func (config Config) EffectiveGlobal() (Limits, error) {
+	if config.RequestWindowSeconds < 1 || config.RequestWindowSeconds > 86400 || config.TokenWindowSeconds < 1 || config.TokenWindowSeconds > 2592000 {
 		return Limits{}, fmt.Errorf("request window must be 1..86400 seconds; token window 1..2592000 seconds")
 	}
-	if !validLimits(c.User) || !validLimits(c.GlobalCeiling) {
+	if !validLimits(config.User) || !validLimits(config.GlobalCeiling) {
 		return Limits{}, fmt.Errorf("user and ceiling limits must be positive and at most 10^15")
 	}
-	if len(c.Models) == 0 {
+	if len(config.Models) == 0 {
 		return Limits{}, fmt.Errorf("at least one canonical model is required")
 	}
 	names := make(map[string]bool)
 	var total Limits
-	for _, model := range c.Models {
+	for _, model := range config.Models {
 		if !validLimits(model.Limits) {
 			return Limits{}, fmt.Errorf("model limits must be positive and at most 10^15")
 		}
@@ -100,8 +102,8 @@ func (c Config) EffectiveGlobal() (Limits, error) {
 			names[name] = true
 		}
 		// Saturating sums avoid overflow and make the safety ceiling explicit.
-		total.Requests += min(model.Limits.Requests, c.GlobalCeiling.Requests-total.Requests)
-		total.Tokens += min(model.Limits.Tokens, c.GlobalCeiling.Tokens-total.Tokens)
+		total.Requests += min(model.Limits.Requests, config.GlobalCeiling.Requests-total.Requests)
+		total.Tokens += min(model.Limits.Tokens, config.GlobalCeiling.Tokens-total.Tokens)
 	}
 	return total, nil
 }

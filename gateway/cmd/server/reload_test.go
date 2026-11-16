@@ -17,130 +17,130 @@ import (
 	"llm-gateway-scheduler/gateway/internal/registry"
 )
 
-func controlDir(t *testing.T) string {
-	t.Helper()
+func controlDir(testContext *testing.T) string {
+	testContext.Helper()
 	// Unix socket paths have a short OS length limit.
 	dir, err := os.MkdirTemp("", "gw-reload-")
 	if err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
+	testContext.Cleanup(func() { os.RemoveAll(dir) })
 	return dir
 }
 
-func TestReloadCommand(t *testing.T) {
-	dir := controlDir(t)
+func TestReloadCommand(testContext *testing.T) {
+	dir := controlDir(testContext)
 	path := filepath.Join(dir, "config.json")
-	c := registry.Default()
+	config := registry.Default()
 	write := func() {
-		raw, _ := json.Marshal(c)
+		raw, _ := json.Marshal(config)
 		if err := os.WriteFile(path, raw, 0600); err != nil {
-			t.Fatal(err)
+			testContext.Fatal(err)
 		}
 	}
 	write()
-	h, _, reload, err := configureHandler(configVerifier{}, path, "", "")
+	handler, _, reload, err := configureHandler(configVerifier{}, path, "", "")
 	if err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
 	closeControl, err := startReloadControl(dir, reload)
 	if err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
 	defer closeControl()
 	request := func(method, path, body string) *httptest.ResponseRecorder {
-		r := httptest.NewRequest(method, path, strings.NewReader(body))
-		r.Header.Set("Authorization", "Bearer test")
-		r.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-		h.ServeHTTP(w, r)
-		return w
+		httpRequest := httptest.NewRequest(method, path, strings.NewReader(body))
+		httpRequest.Header.Set("Authorization", "Bearer test")
+		httpRequest.Header.Set("Content-Type", "application/json")
+		responseRecorder := httptest.NewRecorder()
+		handler.ServeHTTP(responseRecorder, httpRequest)
+		return responseRecorder
 	}
 	body := `{"model":"unknown","messages":[{"role":"user","content":"hello"}]}`
-	if w := request("POST", "/v1/chat/completions", body); w.Code != 404 {
-		t.Fatal(w.Code, w.Body)
+	if responseRecorder := request("POST", "/v1/chat/completions", body); responseRecorder.Code != 404 {
+		testContext.Fatal(responseRecorder.Code, responseRecorder.Body)
 	}
-	second := c.Models[0]
+	second := config.Models[0]
 	second.ID, second.Aliases = "second", nil
 	second.Backend.RuntimeID, second.Backend.BaseURL = "second", "http://127.0.0.1:8082"
-	c.Models = append(c.Models, second)
-	c.Quotas.User.Requests = 1
+	config.Models = append(config.Models, second)
+	config.Quotas.User.Requests = 1
 	write()
 	var output bytes.Buffer
 	if err := runReload([]string{"--config-dir", dir}, &output); err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
 	if !strings.Contains(output.String(), "reloaded") {
-		t.Fatal(output.String())
+		testContext.Fatal(output.String())
 	}
-	if w := request("GET", "/v1/models", ""); w.Code != 200 || !strings.Contains(w.Body.String(), "second") {
-		t.Fatal(w.Code, w.Body)
+	if responseRecorder := request("GET", "/v1/models", ""); responseRecorder.Code != 200 || !strings.Contains(responseRecorder.Body.String(), "second") {
+		testContext.Fatal(responseRecorder.Code, responseRecorder.Body)
 	}
-	if w := request("POST", "/v1/chat/completions", body); w.Code != 429 {
-		t.Fatal("reload reset quota usage", w.Code)
+	if responseRecorder := request("POST", "/v1/chat/completions", body); responseRecorder.Code != 429 {
+		testContext.Fatal("reload reset quota usage", responseRecorder.Code)
 	}
 	// The administrative action is not exposed on the inference HTTP handler.
-	if w := request("POST", "/reload", ""); w.Code != 404 {
-		t.Fatal(w.Code)
+	if responseRecorder := request("POST", "/reload", ""); responseRecorder.Code != 404 {
+		testContext.Fatal(responseRecorder.Code)
 	}
 	os.WriteFile(path, []byte("{"), 0600)
 	output.Reset()
 	if err := runReload([]string{"--config-dir", dir}, &output); err == nil || !strings.Contains(err.Error(), "previous configuration retained") {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
 	if output.Len() != 0 {
-		t.Fatal("rejected reload printed success")
+		testContext.Fatal("rejected reload printed success")
 	}
-	if w := request("GET", "/v1/models", ""); !strings.Contains(w.Body.String(), "second") {
-		t.Fatal("invalid reload replaced registry")
+	if responseRecorder := request("GET", "/v1/models", ""); !strings.Contains(responseRecorder.Body.String(), "second") {
+		testContext.Fatal("invalid reload replaced registry")
 	}
-	c.Gateway.Listen = "127.0.0.1:8001"
+	config.Gateway.Listen = "127.0.0.1:8001"
 	write()
 	if err := runReload([]string{"--config-dir", dir}, &output); err == nil || !strings.Contains(err.Error(), "require restart") {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
 }
 
-func TestControlOwnershipAndCleanup(t *testing.T) {
-	dir := controlDir(t)
+func TestControlOwnershipAndCleanup(testContext *testing.T) {
+	dir := controlDir(testContext)
 	closeControl, err := startReloadControl(dir, func() error { return nil })
 	if err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
-	t.Cleanup(closeControl)
+	testContext.Cleanup(closeControl)
 	if closeOther, err := startReloadControl(dir, func() error { return nil }); err == nil {
 		closeOther()
-		t.Fatal("second server stole control socket")
+		testContext.Fatal("second server stole control socket")
 	}
 	if err := runReload([]string{"--config-dir", dir}, &bytes.Buffer{}); err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
 	closeControl()
 	if _, err := os.Lstat(filepath.Join(dir, reloadSocketName)); !os.IsNotExist(err) {
-		t.Fatal("socket not cleaned", err)
+		testContext.Fatal("socket not cleaned", err)
 	}
 	if err := runReload([]string{"--config-dir", dir}, &bytes.Buffer{}); err == nil {
-		t.Fatal("stopped gateway reported success")
+		testContext.Fatal("stopped gateway reported success")
 	}
 	// Simulate a socket left after a process crash; the new owner can recover it.
 	socket, err := net.ListenUnix("unix", &net.UnixAddr{Name: filepath.Join(dir, reloadSocketName), Net: "unix"})
 	if err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
 	socket.SetUnlinkOnClose(false)
 	os.Chmod(filepath.Join(dir, reloadSocketName), 0600)
 	socket.Close()
 	closeNext, err := startReloadControl(dir, func() error { return nil })
 	if err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
 	closeNext()
 }
 
-func TestUnsafeControlPaths(t *testing.T) {
+func TestUnsafeControlPaths(testContext *testing.T) {
 	for _, kind := range []string{"public directory", "regular socket path", "symlink socket", "symlink lock"} {
-		t.Run(kind, func(t *testing.T) {
-			dir := controlDir(t)
+		testContext.Run(kind, func(testContext *testing.T) {
+			dir := controlDir(testContext)
 			path := filepath.Join(dir, reloadSocketName)
 			target := filepath.Join(dir, "keep")
 			os.WriteFile(target, []byte("keep"), 0600)
@@ -156,47 +156,47 @@ func TestUnsafeControlPaths(t *testing.T) {
 			}
 			if closeControl, err := startReloadControl(dir, func() error { return nil }); err == nil {
 				closeControl()
-				t.Fatal("unsafe path accepted")
+				testContext.Fatal("unsafe path accepted")
 			}
 			if raw, _ := os.ReadFile(target); string(raw) != "keep" {
-				t.Fatal("existing file modified")
+				testContext.Fatal("existing file modified")
 			}
 		})
 	}
 }
 
-func TestReloadFailureModes(t *testing.T) {
-	dir := controlDir(t)
+func TestReloadFailureModes(testContext *testing.T) {
+	dir := controlDir(testContext)
 	_, _, reload, err := configureHandler(configVerifier{}, "", "", "")
 	if err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
 	closeControl, err := startReloadControl(dir, reload)
 	if err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
 	defer closeControl()
 	if err := runReload([]string{"--config-dir", dir}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "no --config") {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
 	for _, args := range [][]string{{"unexpected"}, {"--timeout", "0s"}, {"--timeout", "2m"}} {
 		if err := runReload(args, &bytes.Buffer{}); err == nil {
-			t.Fatal("bad arguments accepted")
+			testContext.Fatal("bad arguments accepted")
 		}
 	}
 	if err := runReload([]string{"--help"}, &bytes.Buffer{}); err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
 	called := false
-	w := httptest.NewRecorder()
-	reloadHandler(func() error { called = true; return nil }).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/reload", nil))
-	if w.Code != 405 || called {
-		t.Fatal("GET triggered reload")
+	responseRecorder := httptest.NewRecorder()
+	reloadHandler(func() error { called = true; return nil }).ServeHTTP(responseRecorder, httptest.NewRequest(http.MethodGet, "/reload", nil))
+	if responseRecorder.Code != 405 || called {
+		testContext.Fatal("GET triggered reload")
 	}
 }
 
-func TestReloadTimeout(t *testing.T) {
-	dir := controlDir(t)
+func TestReloadTimeout(testContext *testing.T) {
+	dir := controlDir(testContext)
 	started, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	closeControl, err := startReloadControl(dir, func() error {
 		close(started)
@@ -205,7 +205,7 @@ func TestReloadTimeout(t *testing.T) {
 		return nil
 	})
 	if err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
 	defer closeControl()
 	result := make(chan error, 1)
@@ -214,21 +214,21 @@ func TestReloadTimeout(t *testing.T) {
 	case <-started:
 	case <-time.After(time.Second):
 		close(release)
-		t.Fatal("reload did not start")
+		testContext.Fatal("reload did not start")
 	}
 	err = <-result
 	close(release)
 	<-finished
 	if err == nil || !strings.Contains(err.Error(), "could not confirm") {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
 }
 
-func TestGatewayCommandProcess(t *testing.T) {
+func TestGatewayCommandProcess(testContext *testing.T) {
 	if os.Getenv("GATEWAY_RELOAD_TEST_HELPER") == "1" {
-		for i, arg := range os.Args {
+		for index, arg := range os.Args {
 			if arg == "--" {
-				os.Args = append([]string{"gateway"}, os.Args[i+1:]...)
+				os.Args = append([]string{"gateway"}, os.Args[index+1:]...)
 				break
 			}
 		}
@@ -236,18 +236,18 @@ func TestGatewayCommandProcess(t *testing.T) {
 		main()
 		os.Exit(0)
 	}
-	dir := controlDir(t)
+	dir := controlDir(testContext)
 	path := filepath.Join(dir, "gateway.json")
-	c := registry.Default()
+	config := registry.Default()
 	probe, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
-	c.Gateway.Listen = probe.Addr().String()
+	config.Gateway.Listen = probe.Addr().String()
 	probe.Close()
-	raw, _ := json.Marshal(c)
+	raw, _ := json.Marshal(config)
 	if err := os.WriteFile(path, raw, 0600); err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
 	command := func(args ...string) *exec.Cmd {
 		cmd := exec.Command(os.Args[0], append([]string{"-test.run=^TestGatewayCommandProcess$", "--"}, args...)...)
@@ -258,21 +258,21 @@ func TestGatewayCommandProcess(t *testing.T) {
 	var logs bytes.Buffer
 	server.Stdout, server.Stderr = &logs, &logs
 	if err := server.Start(); err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
-	t.Cleanup(func() {
+	testContext.Cleanup(func() {
 		server.Process.Signal(os.Interrupt)
 		done := make(chan error, 1)
 		go func() { done <- server.Wait() }()
 		select {
 		case err := <-done:
 			if err != nil {
-				t.Errorf("temporary gateway exited: %v\n%s", err, logs.String())
+				testContext.Errorf("temporary gateway exited: %v\n%s", err, logs.String())
 			}
 		case <-time.After(5 * time.Second):
 			server.Process.Kill()
 			<-done
-			t.Error("temporary gateway did not shut down")
+			testContext.Error("temporary gateway did not shut down")
 		}
 	})
 	deadline := time.Now().Add(5 * time.Second)
@@ -280,20 +280,20 @@ func TestGatewayCommandProcess(t *testing.T) {
 		output, err := command("reload", "--config-dir", dir).CombinedOutput()
 		if err == nil {
 			if !strings.Contains(string(output), "configuration reloaded") {
-				t.Fatal(string(output))
+				testContext.Fatal(string(output))
 			}
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("command failed: %v %s", err, output)
+			testContext.Fatalf("command failed: %v %s", err, output)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	if err := os.WriteFile(path, []byte("{"), 0600); err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
 	output, err := command("reload", "--config-dir", dir).CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "previous configuration retained") {
-		t.Fatalf("rejection exit status/output: %v %s", err, output)
+		testContext.Fatalf("rejection exit status/output: %v %s", err, output)
 	}
 }

@@ -14,30 +14,34 @@ import (
 
 	"llm-gateway-scheduler/gateway/internal/capacity"
 	"llm-gateway-scheduler/gateway/internal/registry"
+	"llm-gateway-scheduler/gateway/internal/scheduler"
 )
 
-func lifecycleBackend(t *testing.T, busy *atomic.Bool, reply http.HandlerFunc) registry.Config {
-	t.Helper()
-	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/slots" {
-			fmt.Fprintf(w, `[{"id":0,"n_ctx":4096,"is_processing":%t}]`, busy.Load())
+func lifecycleBackend(testContext *testing.T, busy *atomic.Bool, reply http.HandlerFunc) registry.Config {
+	testContext.Helper()
+	testServer := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/slots" {
+			fmt.Fprintf(responseWriter, `[{"id":0,"n_ctx":4096,"is_processing":%t}]`, busy.Load())
 			return
 		}
-		if r.URL.Path == ChatCompletionsPath {
-			reply(w, r)
+		if request.URL.Path == ChatCompletionsPath {
+			reply(responseWriter, request)
 			return
 		}
-		http.NotFound(w, r)
+		http.NotFound(responseWriter, request)
 	}))
-	t.Cleanup(func() { s.CloseClientConnections(); s.Close() })
-	c := registry.Default()
-	c.Models[0].Backend.BaseURL = s.URL
-	return c
+	testContext.Cleanup(func() { testServer.CloseClientConnections(); testServer.Close() })
+	config := registry.Default()
+	settings := scheduler.Default()
+	settings.MaxWaiting = 0
+	config.Gateway.Scheduler = &settings
+	config.Models[0].Backend.BaseURL = testServer.URL
+	return config
 }
-func lifecycleHandler(t *testing.T, c registry.Config, opts ProxyOptions) (*RegisteredHandler, <-chan TimingRecord) {
-	h, reports := liveProxy(t, c, opts)
-	h.counter = &fakeCounter{count: 3}
-	return h, reports
+func lifecycleHandler(testContext *testing.T, config registry.Config, opts ProxyOptions) (*RegisteredHandler, <-chan TimingRecord) {
+	handler, reports := liveProxy(testContext, config, opts)
+	handler.counter = &fakeCounter{count: 3}
+	return handler, reports
 }
 func withUsage(body, usage string) string {
 	return strings.TrimSuffix(body, "}") + `,"usage":` + usage + "}"
@@ -45,175 +49,175 @@ func withUsage(body, usage string) string {
 
 const validUsage = `{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}`
 
-func TestLifecycleActualUsageRefundsBudget(t *testing.T) {
+func TestLifecycleActualUsageRefundsBudget(testContext *testing.T) {
 	for _, stream := range []bool{false, true} {
-		t.Run(fmt.Sprint(stream), func(t *testing.T) {
+		testContext.Run(fmt.Sprint(stream), func(testContext *testing.T) {
 			var busy atomic.Bool
-			c := lifecycleBackend(t, &busy, func(w http.ResponseWriter, r *http.Request) {
+			config := lifecycleBackend(testContext, &busy, func(responseWriter http.ResponseWriter, httpRequest *http.Request) {
 				if stream {
 					var request ChatRequest
-					json.NewDecoder(r.Body).Decode(&request)
+					json.NewDecoder(httpRequest.Body).Decode(&request)
 					if request.StreamOptions == nil || !request.StreamOptions.IncludeUsage {
-						t.Error("usage was not requested internally")
+						testContext.Error("usage was not requested internally")
 					}
-					w.Header().Set("Content-Type", "text/event-stream")
-					io.WriteString(w, chunkFrame("hello", "")+chunkFrame("", "stop")+`data: {"id":"chat-1","object":"chat.completion.chunk","created":1,"model":"local-llm","choices":[],"usage":`+validUsage+"}\n\ndata: [DONE]\n\n")
+					responseWriter.Header().Set("Content-Type", "text/event-stream")
+					io.WriteString(responseWriter, chunkFrame("hello", "")+chunkFrame("", "stop")+`data: {"id":"chat-1","object":"chat.completion.chunk","created":1,"model":"local-llm","choices":[],"usage":`+validUsage+"}\n\ndata: [DONE]\n\n")
 				} else {
-					w.Header().Set("Content-Type", "application/json")
-					io.WriteString(w, withUsage(completion("hello"), validUsage))
+					responseWriter.Header().Set("Content-Type", "application/json")
+					io.WriteString(responseWriter, withUsage(completion("hello"), validUsage))
 				}
 			})
-			c.Quotas.User.Tokens = 140
-			h, reports := lifecycleHandler(t, c, DefaultProxyOptions())
-			for i := 0; i < 2; i++ {
-				w := httptest.NewRecorder()
-				h.ServeHTTP(w, proxyRequest("default", stream))
-				if w.Code != 200 {
-					t.Fatal("actual usage was not refunded", w.Code, w.Body)
+			config.Quotas.User.Tokens = 140
+			handler, reports := lifecycleHandler(testContext, config, DefaultProxyOptions())
+			for index := 0; index < 2; index++ {
+				responseRecorder := httptest.NewRecorder()
+				handler.ServeHTTP(responseRecorder, proxyRequest("default", stream))
+				if responseRecorder.Code != 200 {
+					testContext.Fatal("actual usage was not refunded", responseRecorder.Code, responseRecorder.Body)
 				}
-				if stream && strings.Contains(w.Body.String(), `"usage"`) {
-					t.Fatal("unsolicited usage event leaked")
+				if stream && strings.Contains(responseRecorder.Body.String(), `"usage"`) {
+					testContext.Fatal("unsolicited usage event leaked")
 				}
-				r := getReport(t, reports)
-				if r.ReservedTokens != 131 || r.ChargedTokens != 5 || r.UsageSource != "backend" || r.CapacityState != "released" || r.UserID != "alice" || r.Model != "local-llm" || r.RuntimeID == "" {
-					t.Fatalf("bad settlement: %+v", r)
+				timingRecord := getReport(testContext, reports)
+				if timingRecord.ReservedTokens != 131 || timingRecord.ChargedTokens != 5 || timingRecord.UsageSource != "backend" || timingRecord.CapacityState != "released" || timingRecord.UserID != "alice" || timingRecord.Model != "local-llm" || timingRecord.RuntimeID == "" {
+					testContext.Fatalf("bad settlement: %+v", timingRecord)
 				}
 			}
-			w := httptest.NewRecorder()
-			h.ServeHTTP(w, proxyRequest("default", stream))
-			if w.Code != 429 {
-				t.Fatal("spent tokens were not retained", w.Code, w.Body)
+			responseRecorder := httptest.NewRecorder()
+			handler.ServeHTTP(responseRecorder, proxyRequest("default", stream))
+			if responseRecorder.Code != 429 {
+				testContext.Fatal("spent tokens were not retained", responseRecorder.Code, responseRecorder.Body)
 			}
 		})
 	}
 }
 
-func TestLifecycleUsageFallback(t *testing.T) {
+func TestLifecycleUsageFallback(testContext *testing.T) {
 	for _, usage := range []string{"null", `{}`, `{"prompt_tokens":3,"completion_tokens":2,"total_tokens":6}`, `{"prompt_tokens":2,"completion_tokens":2,"total_tokens":4}`, `{"prompt_tokens":3,"completion_tokens":129,"total_tokens":132}`, `{"prompt_tokens":3,"completion_tokens":-1,"total_tokens":2}`, `{"prompt_tokens":3,"completion_tokens":2.5,"total_tokens":5.5}`} {
 		var busy atomic.Bool
-		c := lifecycleBackend(t, &busy, func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			io.WriteString(w, withUsage(completion("hello"), usage))
+		config := lifecycleBackend(testContext, &busy, func(responseWriter http.ResponseWriter, request *http.Request) {
+			responseWriter.Header().Set("Content-Type", "application/json")
+			io.WriteString(responseWriter, withUsage(completion("hello"), usage))
 		})
-		c.Quotas.User.Tokens = 140
-		h, reports := lifecycleHandler(t, c, DefaultProxyOptions())
-		w := httptest.NewRecorder()
-		h.ServeHTTP(w, proxyRequest("local-llm", false))
-		r := getReport(t, reports)
-		if w.Code != 200 || r.ChargedTokens != 131 || r.UsageSource != "fallback" || r.Usage != nil {
-			t.Fatal(usage, w.Code, r)
+		config.Quotas.User.Tokens = 140
+		handler, reports := lifecycleHandler(testContext, config, DefaultProxyOptions())
+		responseRecorder := httptest.NewRecorder()
+		handler.ServeHTTP(responseRecorder, proxyRequest("local-llm", false))
+		timingRecord := getReport(testContext, reports)
+		if responseRecorder.Code != 200 || timingRecord.ChargedTokens != 131 || timingRecord.UsageSource != "fallback" || timingRecord.Usage != nil {
+			testContext.Fatal(usage, responseRecorder.Code, timingRecord)
 		}
-		w = httptest.NewRecorder()
-		h.ServeHTTP(w, proxyRequest("local-llm", false))
-		if w.Code != 429 {
-			t.Fatal("fallback undercharged", w.Code)
+		responseRecorder = httptest.NewRecorder()
+		handler.ServeHTTP(responseRecorder, proxyRequest("local-llm", false))
+		if responseRecorder.Code != 429 {
+			testContext.Fatal("fallback undercharged", responseRecorder.Code)
 		}
 	}
 }
 
-func TestLifecycleBusyAliasRefundAndRecovery(t *testing.T) {
+func TestLifecycleBusyAliasRefundAndRecovery(testContext *testing.T) {
 	var busy atomic.Bool
 	started, release := make(chan struct{}), make(chan struct{})
-	c := lifecycleBackend(t, &busy, func(w http.ResponseWriter, r *http.Request) {
+	config := lifecycleBackend(testContext, &busy, func(responseWriter http.ResponseWriter, request *http.Request) {
 		busy.Store(true)
 		close(started)
 		select {
 		case <-release:
-		case <-r.Context().Done():
+		case <-request.Context().Done():
 		}
 		busy.Store(false)
-		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, withUsage(completion("hello"), validUsage))
+		responseWriter.Header().Set("Content-Type", "application/json")
+		io.WriteString(responseWriter, withUsage(completion("hello"), validUsage))
 	})
-	c.Quotas.User.Tokens = 400
-	h, reports := lifecycleHandler(t, c, DefaultProxyOptions())
+	config.Quotas.User.Tokens = 400
+	handler, reports := lifecycleHandler(testContext, config, DefaultProxyOptions())
 	done := make(chan struct{})
-	go func() { defer close(done); h.ServeHTTP(httptest.NewRecorder(), proxyRequest("local-llm", false)) }()
+	go func() { defer close(done); handler.ServeHTTP(httptest.NewRecorder(), proxyRequest("local-llm", false)) }()
 	<-started
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, proxyRequest("default", false))
-	if w.Code != 503 || !strings.Contains(w.Body.String(), "capacity_exceeded") {
-		t.Fatal(w.Code, w.Body)
+	responseRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(responseRecorder, proxyRequest("default", false))
+	if responseRecorder.Code != 503 || !strings.Contains(responseRecorder.Body.String(), "capacity_exceeded") {
+		testContext.Fatal(responseRecorder.Code, responseRecorder.Body)
 	}
-	r := getReport(t, reports)
-	if r.ChargedTokens != 0 || r.UsageSource != "not_dispatched" {
-		t.Fatal(r)
+	timingRecord := getReport(testContext, reports)
+	if timingRecord.ChargedTokens != 0 || timingRecord.UsageSource != "not_dispatched" {
+		testContext.Fatal(timingRecord)
 	}
-	next := c.Clone()
+	next := config.Clone()
 	next.Models = nil
-	if h.Reload(next) == nil {
-		t.Fatal("removed occupied model")
+	if handler.Reload(next) == nil {
+		testContext.Fatal("removed occupied model")
 	}
 	close(release)
 	<-done
-	getReport(t, reports)
+	getReport(testContext, reports)
 	// Reservation state is observable without adding a production debug endpoint.
-	reservation, decision := h.quotas.ReserveForModel("alice", "local-llm", 395)
+	reservation, decision := handler.quotas.ReserveForModel("alice", "local-llm", 395)
 	if !decision.Allowed {
-		t.Fatal("busy rejection leaked tokens", decision)
+		testContext.Fatal("busy rejection leaked tokens", decision)
 	}
-	h.quotas.SettleTokens(reservation, 0)
-	base, _ := registry.LocalURL(c.Models[0].Backend.BaseURL)
-	if h.capacity.Occupied(base) {
-		t.Fatal("completed request leaked capacity")
+	handler.quotas.SettleTokens(reservation, 0)
+	base, _ := registry.LocalURL(config.Models[0].Backend.BaseURL)
+	if handler.capacity.Occupied(base) {
+		testContext.Fatal("completed request leaked capacity")
 	}
 }
 
-func TestLifecycleCancellationWaitsForBackendIdle(t *testing.T) {
+func TestLifecycleCancellationWaitsForBackendIdle(testContext *testing.T) {
 	var busy atomic.Bool
 	started, cancelled := make(chan struct{}), make(chan struct{})
-	c := lifecycleBackend(t, &busy, func(w http.ResponseWriter, r *http.Request) {
+	config := lifecycleBackend(testContext, &busy, func(responseWriter http.ResponseWriter, request *http.Request) {
 		busy.Store(true)
-		w.Header().Set("Content-Type", "text/event-stream")
-		io.WriteString(w, chunkFrame("hello", ""))
-		w.(http.Flusher).Flush()
+		responseWriter.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(responseWriter, chunkFrame("hello", ""))
+		responseWriter.(http.Flusher).Flush()
 		close(started)
-		<-r.Context().Done()
+		<-request.Context().Done()
 		close(cancelled)
 	})
-	h, reports := lifecycleHandler(t, c, DefaultProxyOptions())
+	handler, reports := lifecycleHandler(testContext, config, DefaultProxyOptions())
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	w := &observedWriter{ResponseRecorder: httptest.NewRecorder(), ready: make(chan struct{})}
+	responseRecorder := &observedWriter{ResponseRecorder: httptest.NewRecorder(), ready: make(chan struct{})}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		defer func() {
-			if p := recover(); p != nil && p != http.ErrAbortHandler {
-				t.Errorf("panic: %v", p)
+			if panicValue := recover(); panicValue != nil && panicValue != http.ErrAbortHandler {
+				testContext.Errorf("panic: %v", panicValue)
 			}
 		}()
-		h.ServeHTTP(w, proxyRequest("local-llm", true).WithContext(ctx))
+		handler.ServeHTTP(responseRecorder, proxyRequest("local-llm", true).WithContext(ctx))
 	}()
 	<-started
 	// Wait for the gateway to observe a backend event before cancelling.
-	<-w.ready
+	<-responseRecorder.ready
 	cancel()
 	<-cancelled
-	base, _ := registry.LocalURL(c.Models[0].Backend.BaseURL)
-	if !h.capacity.Occupied(base) {
-		t.Fatal("capacity released on HTTP disconnect")
+	base, _ := registry.LocalURL(config.Models[0].Backend.BaseURL)
+	if !handler.capacity.Occupied(base) {
+		testContext.Fatal("capacity released on HTTP disconnect")
 	}
 	<-done
-	r := getReport(t, reports)
-	if r.CapacityState != "quarantined_pending_idle" || r.ChargedTokens != 131 || r.UsageSource != "fallback" {
-		t.Fatal(r)
+	timingRecord := getReport(testContext, reports)
+	if timingRecord.CapacityState != "quarantined_pending_idle" || timingRecord.ChargedTokens != 131 || timingRecord.UsageSource != "fallback" {
+		testContext.Fatal(timingRecord)
 	}
 	probe := httptest.NewRecorder()
-	h.ServeHTTP(probe, proxyRequest("default", false))
+	handler.ServeHTTP(probe, proxyRequest("default", false))
 	if probe.Code != 503 || !strings.Contains(probe.Body.String(), "capacity_unconfirmed") {
-		t.Fatal(probe.Code, probe.Body)
+		testContext.Fatal(probe.Code, probe.Body)
 	}
-	getReport(t, reports)
+	getReport(testContext, reports)
 	busy.Store(false)
-	if !h.capacity.Recover(context.Background(), base, func(ctx context.Context) (bool, error) { return h.execution.Idle(ctx, c.Models[0]) }) {
-		t.Fatal("idle runtime did not recover")
+	if !handler.capacity.Recover(context.Background(), base, func(ctx context.Context) (bool, error) { return handler.execution.Idle(ctx, config.Models[0]) }) {
+		testContext.Fatal("idle runtime did not recover")
 	}
-	l, err := h.capacity.Acquire(base)
+	lease, err := handler.capacity.Acquire(base)
 	if err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
-	l.Release()
+	lease.Release()
 }
 
 type observedWriter struct {
@@ -222,54 +226,54 @@ type observedWriter struct {
 	once  sync.Once
 }
 
-func (w *observedWriter) Write(b []byte) (int, error) {
-	n, err := w.ResponseRecorder.Write(b)
-	w.once.Do(func() { close(w.ready) })
-	return n, err
+func (writer *observedWriter) Write(responseBody []byte) (int, error) {
+	count, err := writer.ResponseRecorder.Write(responseBody)
+	writer.once.Do(func() { close(writer.ready) })
+	return count, err
 }
 
-func TestLifecycleUnknownDispatchDoesNotTrustIdle(t *testing.T) {
+func TestLifecycleUnknownDispatchDoesNotTrustIdle(testContext *testing.T) {
 	var busy atomic.Bool
-	c := lifecycleBackend(t, &busy, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(500) })
-	h, reports := lifecycleHandler(t, c, DefaultProxyOptions())
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, proxyRequest("local-llm", false))
-	r := getReport(t, reports)
-	if r.CapacityState != "quarantined_unknown_dispatch" || r.ChargedTokens != 131 {
-		t.Fatal(r)
+	config := lifecycleBackend(testContext, &busy, func(responseWriter http.ResponseWriter, request *http.Request) { responseWriter.WriteHeader(500) })
+	handler, reports := lifecycleHandler(testContext, config, DefaultProxyOptions())
+	responseRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(responseRecorder, proxyRequest("local-llm", false))
+	timingRecord := getReport(testContext, reports)
+	if timingRecord.CapacityState != "quarantined_unknown_dispatch" || timingRecord.ChargedTokens != 131 {
+		testContext.Fatal(timingRecord)
 	}
-	w = httptest.NewRecorder()
-	h.ServeHTTP(w, proxyRequest("local-llm", false))
-	if w.Code != 503 || !strings.Contains(w.Body.String(), "capacity_unconfirmed") {
-		t.Fatal(w.Code, w.Body)
+	responseRecorder = httptest.NewRecorder()
+	handler.ServeHTTP(responseRecorder, proxyRequest("local-llm", false))
+	if responseRecorder.Code != 503 || !strings.Contains(responseRecorder.Body.String(), "capacity_unconfirmed") {
+		testContext.Fatal(responseRecorder.Code, responseRecorder.Body)
 	}
 }
 
-func TestLifecycleFinishExactlyOnce(t *testing.T) {
-	h := registeredTest(t, registry.Default(), &fakeCounter{count: 3})
-	reservation, d := h.quotas.ReserveForModel("alice", "local-llm", 131)
-	if !d.Allowed {
-		t.Fatal(d)
+func TestLifecycleFinishExactlyOnce(testContext *testing.T) {
+	handler := registeredTest(testContext, registry.Default(), &fakeCounter{count: 3})
+	reservation, quotaDecision := handler.quotas.ReserveForModel("alice", "local-llm", 131)
+	if !quotaDecision.Allowed {
+		testContext.Fatal(quotaDecision)
 	}
-	p, err := newPreparedRequest(registry.Default().Models[0], ChatRequest{Messages: []Message{}}, 128, h.quotas, reservation, 131)
+	prepared, err := newPreparedRequest(registry.Default().Models[0], ChatRequest{Messages: []Message{}}, 128, handler.quotas, reservation, 131)
 	if err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
-	m := capacity.New(1)
-	p.lease, _ = m.Acquire("backend")
-	if err := p.finish(); err != nil {
-		t.Fatal(err)
+	capacityManager := capacity.New(1)
+	prepared.lease, _ = capacityManager.Acquire("backend")
+	if err := prepared.settleUsageAndReleaseCapacity(); err != nil {
+		testContext.Fatal(err)
 	}
-	if err := p.finish(); err != nil {
-		t.Fatal(err)
+	if err := prepared.settleUsageAndReleaseCapacity(); err != nil {
+		testContext.Fatal(err)
 	}
-	l, err := m.Acquire("backend")
+	lease, err := capacityManager.Acquire("backend")
 	if err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
-	p.finish()
-	if _, err = m.Acquire("other"); err != capacity.ErrFull {
-		t.Fatal("duplicate cleanup freed another request", err)
+	prepared.settleUsageAndReleaseCapacity()
+	if _, err = capacityManager.Acquire("other"); err != capacity.ErrFull {
+		testContext.Fatal("duplicate cleanup freed another request", err)
 	}
-	l.Release()
+	lease.Release()
 }

@@ -14,11 +14,11 @@ import (
 const validBody = `{"model":"local-llm","messages":[{"role":"user","content":"Hello"}]}`
 
 func testHandler(verifier Authenticator) http.Handler {
-	m, err := quota.New(quota.DefaultConfig(), nil)
+	model, err := quota.New(quota.DefaultConfig(), nil)
 	if err != nil {
 		panic(err)
 	}
-	return NewHandler(verifier, m)
+	return NewHandler(verifier, model)
 }
 
 type testVerifier struct{}
@@ -30,7 +30,7 @@ func (testVerifier) Verify(token string) (auth.Principal, error) {
 	return auth.Principal{KeyID: "test-id", UserID: "test-user"}, nil
 }
 
-func TestEndpoints(t *testing.T) {
+func TestEndpoints(testContext *testing.T) {
 	tests := []struct {
 		name, method, path, body, contentType string
 		status                                int
@@ -70,7 +70,7 @@ func TestEndpoints(t *testing.T) {
 		{name: "large trailing data", body: validBody + strings.Repeat(" ", MaxBodyBytes), contentType: "application/json", status: 413, code: "body_too_large"},
 	}
 	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
+		testContext.Run(test.name, func(testContext *testing.T) {
 			method, path := test.method, test.path
 			if method == "" {
 				method = "POST"
@@ -84,39 +84,39 @@ func TestEndpoints(t *testing.T) {
 			response := httptest.NewRecorder()
 			testHandler(testVerifier{}).ServeHTTP(response, request)
 			if response.Code != test.status {
-				t.Fatalf("status = %d, want %d: %s", response.Code, test.status, response.Body)
+				testContext.Fatalf("status = %d, want %d: %s", response.Code, test.status, response.Body)
 			}
 			if response.Header().Get("Content-Type") != "application/json" || response.Header().Get("Cache-Control") != "no-store" {
-				t.Fatal("missing JSON/no-store headers")
+				testContext.Fatal("missing JSON/no-store headers")
 			}
 			if response.Header().Get("Allow") != test.allow {
-				t.Fatalf("Allow = %q, want %q", response.Header().Get("Allow"), test.allow)
+				testContext.Fatalf("Allow = %q, want %q", response.Header().Get("Allow"), test.allow)
 			}
 			if test.status == http.StatusOK {
 				var health map[string]string
 				if err := json.Unmarshal(response.Body.Bytes(), &health); err != nil || health["status"] != "ok" {
-					t.Fatalf("invalid health response: %s", response.Body)
+					testContext.Fatalf("invalid health response: %s", response.Body)
 				}
 				return
 			}
 			var result ErrorResponse
 			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
-				t.Fatal(err)
+				testContext.Fatal(err)
 			}
 			if result.Error.Code != test.code || result.Error.Message == "" || result.Error.Type == "" {
-				t.Fatalf("invalid error response: %+v", result)
+				testContext.Fatalf("invalid error response: %+v", result)
 			}
 			if test.param == "" && result.Error.Param != nil || test.param != "" && (result.Error.Param == nil || *result.Error.Param != test.param) {
-				t.Fatalf("unexpected error param: %+v", result.Error)
+				testContext.Fatalf("unexpected error param: %+v", result.Error)
 			}
 		})
 	}
 }
 
-func TestSupportedOptionsRemainStubs(t *testing.T) {
+func TestSupportedOptionsRemainStubs(testContext *testing.T) {
 	for _, role := range []string{"system", "developer", "user", "assistant"} {
 		for _, cap := range []string{"max_tokens", "max_completion_tokens"} {
-			t.Run(role+"/"+cap, func(t *testing.T) {
+			testContext.Run(role+"/"+cap, func(testContext *testing.T) {
 				body := `{"model":"local-llm","messages":[{"role":"` + role + `","content":"","name":"demo"}],"` + cap + `":64,"temperature":0,"stream":true,"stream_options":{"include_usage":true},"request_class":"background"}`
 				request := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
 				request.Header.Set("Content-Type", "application/json; charset=utf-8")
@@ -124,14 +124,14 @@ func TestSupportedOptionsRemainStubs(t *testing.T) {
 				response := httptest.NewRecorder()
 				testHandler(testVerifier{}).ServeHTTP(response, request)
 				if response.Code != http.StatusNotImplemented || strings.Contains(response.Body.String(), "[DONE]") {
-					t.Fatalf("stub must not fabricate a stream: %d %s", response.Code, response.Body)
+					testContext.Fatalf("stub must not fabricate a stream: %d %s", response.Code, response.Body)
 				}
 			})
 		}
 	}
 }
 
-func TestCompressedBodyRejected(t *testing.T) {
+func TestCompressedBodyRejected(testContext *testing.T) {
 	request := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(validBody))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Content-Encoding", "gzip")
@@ -139,11 +139,11 @@ func TestCompressedBodyRejected(t *testing.T) {
 	response := httptest.NewRecorder()
 	testHandler(testVerifier{}).ServeHTTP(response, request)
 	if response.Code != http.StatusUnsupportedMediaType {
-		t.Fatal(response.Code)
+		testContext.Fatal(response.Code)
 	}
 }
 
-func TestResponseSchema(t *testing.T) {
+func TestResponseSchema(testContext *testing.T) {
 	text := "hello"
 	completion := Completion{
 		ID: "chatcmpl-example", Object: "chat.completion", Created: 1, Model: "local-llm",
@@ -152,15 +152,15 @@ func TestResponseSchema(t *testing.T) {
 	}
 	data, err := json.Marshal(completion)
 	if err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
 	var result map[string]any
 	if err := json.Unmarshal(data, &result); err != nil || result["object"] != "chat.completion" {
-		t.Fatalf("invalid completion: %s", data)
+		testContext.Fatalf("invalid completion: %s", data)
 	}
 	chunk := Chunk{ID: "chatcmpl-example", Object: "chat.completion.chunk", Created: 1, Model: "local-llm", Choices: []ChunkChoice{{Index: 0, Delta: Delta{Content: &text}}}}
 	data, err = json.Marshal(chunk)
 	if err != nil || !strings.Contains(string(data), `"finish_reason":null`) || strings.Contains(string(data), `"message"`) {
-		t.Fatalf("invalid chunk: %s, %v", data, err)
+		testContext.Fatalf("invalid chunk: %s, %v", data, err)
 	}
 }

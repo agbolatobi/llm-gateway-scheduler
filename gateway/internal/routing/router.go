@@ -22,14 +22,14 @@ type Route struct {
 // The caller must first verify this snapshot's identity/readiness and tokenize
 // against it. That check is a point-in-time observation, not a health guarantee.
 func Select(model registry.Model) (Route, error) {
-	b := model.Backend
-	base, err := registry.LocalURL(b.BaseURL)
-	if err != nil || model.ID == "" || b.RuntimeID == "" || b.Engine != "llama.cpp" ||
-		strings.TrimSpace(b.ExpectedModel) == "" || b.ExpectedModel != strings.TrimSpace(b.ExpectedModel) || model.MaxOutputTokens < 1 {
+	backend := model.Backend
+	base, err := registry.LocalURL(backend.BaseURL)
+	if err != nil || model.ID == "" || backend.RuntimeID == "" || backend.Engine != "llama.cpp" ||
+		strings.TrimSpace(backend.ExpectedModel) == "" || backend.ExpectedModel != strings.TrimSpace(backend.ExpectedModel) || model.MaxOutputTokens < 1 {
 		return Route{}, failure(http.StatusServiceUnavailable, "route_unavailable", "No eligible configured backend is available.", nil)
 	}
-	return Route{modelID: model.ID, runtimeID: b.RuntimeID, baseURL: base,
-		backendModel: b.ExpectedModel, maxOutputTokens: model.MaxOutputTokens}, nil
+	return Route{modelID: model.ID, runtimeID: backend.RuntimeID, baseURL: base,
+		backendModel: backend.ExpectedModel, maxOutputTokens: model.MaxOutputTokens}, nil
 }
 
 // Error exposes a safe API message while retaining the original cause for
@@ -40,8 +40,8 @@ type Error struct {
 	cause         error
 }
 
-func (e *Error) Error() string { return e.Message }
-func (e *Error) Unwrap() error { return e.cause }
+func (routingError *Error) Error() string { return routingError.Message }
+func (routingError *Error) Unwrap() error { return routingError.cause }
 func failure(status int, code, message string, cause error) error {
 	return &Error{Status: status, Code: code, Message: message, cause: cause}
 }

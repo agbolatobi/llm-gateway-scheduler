@@ -2,7 +2,7 @@
   "info": {
     "name": "Gateway tests — reusable",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-    "description": "One test server, saved URL and key. Use Run all tests for automatic checks, or send requests in Manual requests individually. Import the generated collection and reusable environment from .runtime/gate07-lab. Manual hold/cancellation steps require multiple tabs; do not run the entire manual folder in Collection Runner."
+    "description": "Reusable gateway and queue tests. Run all tests replays GATE-07 plus deterministic Go queue tests; manual folders remain available. Same collection/environment variables. Test-only scheduler controls support policy reload without changing URL/key."
   },
   "auth": {
     "type": "bearer",
@@ -91,6 +91,29 @@
       "name": "Manual requests — send individually",
       "description": "Reset before each scenario. State persists between requests. All routes use the same URL/key. Controls are test-only.",
       "item": [
+        {
+          "name": "GATE-07: disable waiting for busy-rejection checks",
+          "request": {
+            "method": "POST",
+            "url": "{{gateway_test_url}}/tests/scheduler",
+            "description": "Legacy capacity tests expect immediate 503. Queue examples have their own enable requests.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"policy\": \"fifo\",\n  \"max_waiting_requests\": 0\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        },
         {
           "name": "Reset before a manual scenario",
           "request": {
@@ -836,6 +859,259 @@
               }
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "Queue requests — send individually",
+      "description": "Same URL/key. Reset, choose policy, hold the backend, then use separate tabs. Cancel a waiting tab to remove it. Release with normal. Never run this folder as a sequential collection.",
+      "item": [
+        {
+          "name": "Reset before queue scenario",
+          "request": {
+            "method": "POST",
+            "url": "{{gateway_test_url}}/tests/reset",
+            "description": ""
+          }
+        },
+        {
+          "name": "Use FIFO — two waiting slots",
+          "request": {
+            "method": "POST",
+            "url": "{{gateway_test_url}}/tests/scheduler",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"max_waiting_requests\": 2,\n  \"max_waiting_per_runtime\": 2,\n  \"max_queue_wait_seconds\": 20,\n  \"aging_threshold_seconds\": 2,\n  \"policy\": \"fifo\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Use interactive priority with aging",
+          "request": {
+            "method": "POST",
+            "url": "{{gateway_test_url}}/tests/scheduler",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"max_waiting_requests\": 2,\n  \"max_waiting_per_runtime\": 2,\n  \"max_queue_wait_seconds\": 20,\n  \"aging_threshold_seconds\": 2,\n  \"policy\": \"interactive_priority_aging\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Inspect scheduler settings",
+          "request": {
+            "method": "GET",
+            "url": "{{gateway_test_url}}/tests/scheduler",
+            "description": ""
+          }
+        },
+        {
+          "name": "Hold backend",
+          "request": {
+            "method": "POST",
+            "url": "{{gateway_test_url}}/__test/control",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mode\": \"hold\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Start active stream — leave tab open",
+          "request": {
+            "method": "POST",
+            "url": "{{gateway_test_url}}/v1/chat/completions",
+            "description": "After Hold backend, send this first.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"local-llm\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true,\n  \"request_class\": \"interactive\",\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Test-User",
+                "value": "busy"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Queue background — another tab",
+          "request": {
+            "method": "POST",
+            "url": "{{gateway_test_url}}/v1/chat/completions",
+            "description": "Send while the active stream occupies capacity; this request waits.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"local-llm\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": false,\n  \"request_class\": \"background\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Test-User",
+                "value": "busy"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Queue interactive — another tab",
+          "request": {
+            "method": "POST",
+            "url": "{{gateway_test_url}}/v1/chat/completions",
+            "description": "Send after the background request. FIFO: background first. Priority: interactive first unless background already aged.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"local-llm\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": false,\n  \"request_class\": \"interactive\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Test-User",
+                "value": "busy"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Overflow — third waiting request",
+          "request": {
+            "method": "POST",
+            "url": "{{gateway_test_url}}/v1/chat/completions",
+            "description": "With two waiting requests, expect 503 queue_full.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"local-llm\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": false,\n  \"request_class\": \"interactive\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Test-User",
+                "value": "busy"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Release backend — dispatch waiting requests",
+          "request": {
+            "method": "POST",
+            "url": "{{gateway_test_url}}/__test/control",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mode\": \"normal\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Use short waiting deadline",
+          "request": {
+            "method": "POST",
+            "url": "{{gateway_test_url}}/tests/scheduler",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"max_queue_wait_seconds\": 2\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Inspect dispatch order and queue wait",
+          "request": {
+            "method": "GET",
+            "url": "{{gateway_test_url}}/tests/requests",
+            "description": "Match request IDs. Inspect queue_wait_ms, scheduler_policy, dispatch_reason, and dispatch_ms. Log lines are completion order, not dispatch order."
+          }
         }
       ]
     }

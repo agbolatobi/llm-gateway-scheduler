@@ -287,8 +287,8 @@ class BenchmarkTests(unittest.TestCase):
             with patch.object(run.subprocess, "run", side_effect=self.fake_profile) as execute:
                 self.assertEqual(run.main(self.args("--no-start-server", "--warmup-requests", "0")), 0)
         self.assertEqual(execute.call_count, 2)
-        self.assertTrue(all("--warmup-request-count" not in c.args[0]
-                            for c in execute.call_args_list))
+        self.assertTrue(all("--warmup-request-count" not in configuration.args[0]
+                            for configuration in execute.call_args_list))
 
     def test_failed_startup_prevents_profiling(self):
         failure = subprocess.CalledProcessError(1, ["cli.py"])

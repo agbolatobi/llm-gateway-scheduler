@@ -9,8 +9,8 @@ import (
 	"testing"
 )
 
-func TestExecutionProbeFailsClosed(t *testing.T) {
-	for _, tc := range []struct {
+func TestExecutionProbeFailsClosed(testContext *testing.T) {
+	for _, testCase := range []struct {
 		body          string
 		idle, invalid bool
 	}{
@@ -21,42 +21,44 @@ func TestExecutionProbeFailsClosed(t *testing.T) {
 		{`[{"id":0,"is_processing":true,"is_processing":false}]`, false, true},
 		{`[{"id":0,"is_processing":false},{"id":1,"is_processing":false}]`, false, true},
 	} {
-		t.Run(tc.body, func(t *testing.T) {
-			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(tc.body)) }))
-			defer s.Close()
-			m := Default().Models[0]
-			m.Backend.BaseURL = s.URL
-			p := NewExecutionProbe()
-			defer p.Close()
-			idle, err := p.Idle(context.Background(), m)
-			if idle != tc.idle || (err != nil) != tc.invalid {
-				t.Fatal(idle, err)
+		testContext.Run(testCase.body, func(testContext *testing.T) {
+			testServer := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+				responseWriter.Write([]byte(testCase.body))
+			}))
+			defer testServer.Close()
+			model := Default().Models[0]
+			model.Backend.BaseURL = testServer.URL
+			prepared := NewExecutionProbe()
+			defer prepared.Close()
+			idle, err := prepared.Idle(context.Background(), model)
+			if idle != testCase.idle || (err != nil) != testCase.invalid {
+				testContext.Fatal(idle, err)
 			}
 		})
 	}
 }
-func TestExecutionLimitsValidation(t *testing.T) {
-	c := Default()
-	if c.GlobalActiveLimit() != 1 {
-		t.Fatal("unsafe default")
+func TestExecutionLimitsValidation(testContext *testing.T) {
+	config := Default()
+	if config.GlobalActiveLimit() != 1 {
+		testContext.Fatal("unsafe default")
 	}
 	zero, two := 0, 2
-	c.Gateway.MaxActiveRequests = &zero
-	if c.Validate() == nil {
-		t.Fatal("zero global accepted")
+	config.Gateway.MaxActiveRequests = &zero
+	if config.Validate() == nil {
+		testContext.Fatal("zero global accepted")
 	}
-	c.Gateway.MaxActiveRequests = &two
-	if c.Validate() != nil {
-		t.Fatal("valid global rejected")
+	config.Gateway.MaxActiveRequests = &two
+	if config.Validate() != nil {
+		testContext.Fatal("valid global rejected")
 	}
-	c.Models[0].MaxActiveRequests = &two
-	if c.Validate() == nil {
-		t.Fatal("unsupported multi-slot accepted")
+	config.Models[0].MaxActiveRequests = &two
+	if config.Validate() == nil {
+		testContext.Fatal("unsupported multi-slot accepted")
 	}
-	dir := t.TempDir()
+	dir := testContext.TempDir()
 	file := filepath.Join(dir, "config.json")
 	os.WriteFile(file, []byte(`{"gateway":{"max_active_requests":null}}`), 0600)
 	if _, err := Load(file); err == nil {
-		t.Fatal("null capacity accepted")
+		testContext.Fatal("null capacity accepted")
 	}
 }

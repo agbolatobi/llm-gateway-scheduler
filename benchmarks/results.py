@@ -15,8 +15,11 @@ def request_outcomes(path):
                 raise ValueError(f"Invalid AIPerf record in {path}")
             metadata = row["metadata"]
             phase = metadata.get("benchmark_phase")
-            failed = bool(row.get("error") or metadata.get("was_cancelled")
-                          or metadata.get("context_overflow_skip"))
+            failed = bool(
+                row.get("error")
+                or metadata.get("was_cancelled")
+                or metadata.get("context_overflow_skip")
+            )
             if phase == "profiling":
                 counts["measured"] += 1
                 counts["errors"] += int(failed)

@@ -11,8 +11,8 @@ import (
 	"llm-gateway-scheduler/gateway/internal/auth"
 )
 
-func TestKeyCommands(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "keys")
+func TestKeyCommands(testContext *testing.T) {
+	dir := filepath.Join(testContext.TempDir(), "keys")
 	var out, errOut bytes.Buffer
 	run := func(args ...string) error {
 		out.Reset()
@@ -21,42 +21,69 @@ func TestKeyCommands(t *testing.T) {
 		return runKeys(args, &out, &errOut)
 	}
 	if err := run("create", "--user", "alice"); err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
 	store, err := auth.Open(dir)
 	if err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
 	token, err := store.Show("")
 	if err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
 	records, _ := store.List()
 	if !strings.Contains(out.String(), "API token: "+token+"\n") || strings.Count(out.String(), token) != 1 || strings.Contains(out.String(), records[0].Hash) {
-		t.Fatal("create must print the complete saved token exactly once, without the verification hash")
+		testContext.Fatal("create must print the complete saved token exactly once, without the verification hash")
+	}
+	if !strings.Contains(out.String(), "Chat UI: http://127.0.0.1:8000/chat/\n") {
+		testContext.Fatal("create must print the local chat URL without a token")
 	}
 	if err := run("list"); err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "alice") || strings.Contains(out.String(), token) || strings.Contains(out.String(), records[0].Hash) {
-		t.Fatal("list must show metadata only")
+		testContext.Fatal("list must show metadata only")
 	}
 	if err := run("show"); err != nil || strings.TrimSpace(out.String()) != token {
-		t.Fatal("explicit show should return the saved key")
+		testContext.Fatal("explicit show should return the saved key")
 	}
 	if err := run("use", "--id", records[0].ID); err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
 	if err := run("revoke", "--id", records[0].ID); err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
 	if err := run("show"); err == nil {
-		t.Fatal("show must reject a revoked key")
+		testContext.Fatal("show must reject a revoked key")
 	}
 	if err := run("revoke"); err == nil {
-		t.Fatal("revoke requires ID")
+		testContext.Fatal("revoke requires ID")
 	}
 	if err := run("create"); err == nil {
-		t.Fatal("create requires user")
+		testContext.Fatal("create requires user")
+	}
+}
+
+func TestKeyCreationPublicChatLink(testContext *testing.T) {
+	directory := filepath.Join(testContext.TempDir(), "keys")
+	var output, errorsOutput bytes.Buffer
+	arguments := []string{"create", "--user", "alice", "--config-dir", directory, "--chat-url", "https://chat.example.com"}
+	if err := runKeys(arguments, &output, &errorsOutput); err != nil {
+		testContext.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "Chat UI: https://chat.example.com/chat/\n") {
+		testContext.Fatal("missing public chat URL")
+	}
+	store, err := auth.Open(directory)
+	if err != nil {
+		testContext.Fatal(err)
+	}
+	arguments[len(arguments)-1] = "http://public.example.com"
+	if err := runKeys(arguments, &output, &errorsOutput); err == nil {
+		testContext.Fatal("unsafe public URL accepted")
+	}
+	records, err := store.List()
+	if err != nil || len(records) != 1 {
+		testContext.Fatal("invalid URL must be rejected before generating a key")
 	}
 }

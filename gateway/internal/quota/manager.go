@@ -30,8 +30,8 @@ type Manager struct {
 	modelBudgets               map[string]*budget
 }
 
-func New(c Config, now func() time.Time) (*Manager, error) {
-	global, err := c.EffectiveGlobal()
+func New(config Config, now func() time.Time) (*Manager, error) {
+	global, err := config.EffectiveGlobal()
 	if err != nil {
 		return nil, err
 	}
@@ -39,16 +39,16 @@ func New(c Config, now func() time.Time) (*Manager, error) {
 		now = time.Now
 	}
 	start := now()
-	return &Manager{now: now, userLimit: c.User, globalLimit: global,
-		requestWindow: c.requestWindow(), tokenWindow: c.tokenWindow(),
+	return &Manager{now: now, userLimit: config.User, globalLimit: global,
+		requestWindow: config.requestWindow(), tokenWindow: config.tokenWindow(),
 		requestStart: start, tokenStart: start, requests: make(map[string]int64),
 		budgets: make(map[string]*budget), globalBudget: &budget{},
-		modelLimits: modelLimits(c), modelRequests: make(map[string]int64), modelBudgets: make(map[string]*budget)}, nil
+		modelLimits: modelLimits(config), modelRequests: make(map[string]int64), modelBudgets: make(map[string]*budget)}, nil
 }
 
-func modelLimits(c Config) map[string]Limits {
-	limits := make(map[string]Limits, len(c.Models))
-	for _, model := range c.Models {
+func modelLimits(config Config) map[string]Limits {
+	limits := make(map[string]Limits, len(config.Models))
+	for _, model := range config.Models {
 		limits[model.ID] = model.Limits
 	}
 	return limits
@@ -56,55 +56,55 @@ func modelLimits(c Config) map[string]Limits {
 
 // Reconfigure validates first, then updates limits without resetting any usage.
 // Changing window lengths requires restart, rather than silently reinterpreting usage.
-func (m *Manager) Reconfigure(c Config) error {
-	global, err := c.EffectiveGlobal()
+func (quotaManager *Manager) Reconfigure(config Config) error {
+	global, err := config.EffectiveGlobal()
 	if err != nil {
 		return err
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if c.requestWindow() != m.requestWindow || c.tokenWindow() != m.tokenWindow {
+	quotaManager.mu.Lock()
+	defer quotaManager.mu.Unlock()
+	if config.requestWindow() != quotaManager.requestWindow || config.tokenWindow() != quotaManager.tokenWindow {
 		return fmt.Errorf("changing quota window lengths requires a restart")
 	}
-	m.userLimit, m.globalLimit = c.User, global
-	m.modelLimits = modelLimits(c) // Keep old counters: remove/re-add cannot reset usage.
+	quotaManager.userLimit, quotaManager.globalLimit = config.User, global
+	quotaManager.modelLimits = modelLimits(config) // Keep old counters: remove/re-add cannot reset usage.
 	return nil
 }
 
-func (m *Manager) refresh(now time.Time) {
-	if elapsed := now.Sub(m.requestStart); elapsed >= m.requestWindow {
-		m.requestStart = m.requestStart.Add((elapsed / m.requestWindow) * m.requestWindow)
-		m.requests = make(map[string]int64)
-		m.globalRequests = 0
-		m.modelRequests = make(map[string]int64)
+func (quotaManager *Manager) refresh(now time.Time) {
+	if elapsed := now.Sub(quotaManager.requestStart); elapsed >= quotaManager.requestWindow {
+		quotaManager.requestStart = quotaManager.requestStart.Add((elapsed / quotaManager.requestWindow) * quotaManager.requestWindow)
+		quotaManager.requests = make(map[string]int64)
+		quotaManager.globalRequests = 0
+		quotaManager.modelRequests = make(map[string]int64)
 	}
-	if elapsed := now.Sub(m.tokenStart); elapsed >= m.tokenWindow {
-		m.tokenStart = m.tokenStart.Add((elapsed / m.tokenWindow) * m.tokenWindow)
+	if elapsed := now.Sub(quotaManager.tokenStart); elapsed >= quotaManager.tokenWindow {
+		quotaManager.tokenStart = quotaManager.tokenStart.Add((elapsed / quotaManager.tokenWindow) * quotaManager.tokenWindow)
 		// Outstanding reservations retain their original bucket pointers.
 		// Late settlement must never credit/debit the new admission window.
-		m.budgets = make(map[string]*budget)
-		m.globalBudget = &budget{}
-		m.modelBudgets = make(map[string]*budget)
+		quotaManager.budgets = make(map[string]*budget)
+		quotaManager.globalBudget = &budget{}
+		quotaManager.modelBudgets = make(map[string]*budget)
 	}
 }
 
-func available(b *budget, limit int64) int64 {
-	if b == nil {
+func available(tokenBudget *budget, limit int64) int64 {
+	if tokenBudget == nil {
 		return limit
 	}
-	return limit - b.spent - b.reserved
+	return limit - tokenBudget.spent - tokenBudget.reserved
 }
 
 // CheckAndCount performs ALL checks and increments BOTH request counters under
 // one lock. It neither tokenizes a prompt nor reserves tokens.
-func (m *Manager) CheckAndCount(userID string) Decision {
+func (quotaManager *Manager) CheckAndCount(userID string) Decision {
 	if userID == "" {
 		return Decision{Code: "quota_unavailable"}
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	now := m.now()
-	m.refresh(now)
+	quotaManager.mu.Lock()
+	defer quotaManager.mu.Unlock()
+	now := quotaManager.now()
+	quotaManager.refresh(now)
 	var denied Decision
 	check := func(blocked bool, code string, reset time.Time) {
 		if !blocked {
@@ -115,15 +115,15 @@ func (m *Manager) CheckAndCount(userID string) Decision {
 		}
 		denied.RetryAfter = max(denied.RetryAfter, reset.Sub(now))
 	}
-	requestReset, tokenReset := m.requestStart.Add(m.requestWindow), m.tokenStart.Add(m.tokenWindow)
-	check(m.requests[userID] >= m.userLimit.Requests, "user_request_limit", requestReset)
-	check(m.globalRequests >= m.globalLimit.Requests, "global_request_limit", requestReset)
-	check(available(m.budgets[userID], m.userLimit.Tokens) <= 0, "user_token_limit", tokenReset)
-	check(available(m.globalBudget, m.globalLimit.Tokens) <= 0, "global_token_limit", tokenReset)
+	requestReset, tokenReset := quotaManager.requestStart.Add(quotaManager.requestWindow), quotaManager.tokenStart.Add(quotaManager.tokenWindow)
+	check(quotaManager.requests[userID] >= quotaManager.userLimit.Requests, "user_request_limit", requestReset)
+	check(quotaManager.globalRequests >= quotaManager.globalLimit.Requests, "global_request_limit", requestReset)
+	check(available(quotaManager.budgets[userID], quotaManager.userLimit.Tokens) <= 0, "user_token_limit", tokenReset)
+	check(available(quotaManager.globalBudget, quotaManager.globalLimit.Tokens) <= 0, "global_token_limit", tokenReset)
 	if denied.Code != "" {
 		return denied
 	}
-	m.requests[userID]++
-	m.globalRequests++
+	quotaManager.requests[userID]++
+	quotaManager.globalRequests++
 	return Decision{Allowed: true}
 }

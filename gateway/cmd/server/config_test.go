@@ -18,58 +18,58 @@ func (configVerifier) Verify(string) (auth.Principal, error) {
 	return auth.Principal{UserID: "alice", KeyID: "test"}, nil
 }
 
-func TestCombinedConfigurationReload(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "gateway.json")
-	c := registry.Default()
+func TestCombinedConfigurationReload(testContext *testing.T) {
+	path := filepath.Join(testContext.TempDir(), "gateway.json")
+	config := registry.Default()
 	write := func() {
-		t.Helper()
-		raw, err := json.Marshal(c)
+		testContext.Helper()
+		raw, err := json.Marshal(config)
 		if err != nil {
-			t.Fatal(err)
+			testContext.Fatal(err)
 		}
 		if err := os.WriteFile(path, raw, 0600); err != nil {
-			t.Fatal(err)
+			testContext.Fatal(err)
 		}
 	}
 	write()
-	h, listen, reload, err := configureHandler(configVerifier{}, path, "", "")
+	handler, listen, reload, err := configureHandler(configVerifier{}, path, "", "")
 	if err != nil || listen != "127.0.0.1:8000" {
-		t.Fatal(listen, err)
+		testContext.Fatal(listen, err)
 	}
 	list := func() string {
-		r := httptest.NewRequest("GET", "/v1/models", nil)
-		r.Header.Set("Authorization", "Bearer test")
-		w := httptest.NewRecorder()
-		h.ServeHTTP(w, r)
-		if w.Code != 200 {
-			t.Fatal(w.Code)
+		request := httptest.NewRequest("GET", "/v1/models", nil)
+		request.Header.Set("Authorization", "Bearer test")
+		responseRecorder := httptest.NewRecorder()
+		handler.ServeHTTP(responseRecorder, request)
+		if responseRecorder.Code != 200 {
+			testContext.Fatal(responseRecorder.Code)
 		}
-		return w.Body.String()
+		return responseRecorder.Body.String()
 	}
 	if !strings.Contains(list(), "local-llm") {
-		t.Fatal("initial model missing")
+		testContext.Fatal("initial model missing")
 	}
-	second := c.Models[0]
+	second := config.Models[0]
 	second.ID = "second"
 	second.Aliases = nil
 	second.Backend.RuntimeID = "second"
 	second.Backend.BaseURL = "http://127.0.0.1:8082"
-	c.Models = append(c.Models, second)
+	config.Models = append(config.Models, second)
 	write()
 	if strings.Contains(list(), "second") {
-		t.Fatal("config modified without reload")
+		testContext.Fatal("config modified without reload")
 	}
 	if err := reload(); err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
 	if !strings.Contains(list(), "second") {
-		t.Fatal("registration reload failed")
+		testContext.Fatal("registration reload failed")
 	}
 	os.WriteFile(path, []byte("{"), 0600)
 	if err := reload(); err == nil || !strings.Contains(list(), "second") {
-		t.Fatal("bad reload replaced active config")
+		testContext.Fatal("bad reload replaced active config")
 	}
 	if _, _, _, err := configureHandler(configVerifier{}, path, path, ""); err == nil {
-		t.Fatal("conflicting flags accepted")
+		testContext.Fatal("conflicting flags accepted")
 	}
 }

@@ -10,126 +10,126 @@ import (
 	"time"
 )
 
-func testManager(t *testing.T, c Config) (*Manager, *time.Time) {
-	t.Helper()
+func testManager(testContext *testing.T, config Config) (*Manager, *time.Time) {
+	testContext.Helper()
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	m, err := New(c, func() time.Time { return now })
+	quotaManager, err := New(config, func() time.Time { return now })
 	if err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
-	return m, &now
+	return quotaManager, &now
 }
 
-func TestScalingAndAliases(t *testing.T) {
-	c := DefaultConfig()
-	c.Models[0].Aliases = []string{"alias-a", "alias-b"}
-	for n, want := range []Limits{{30, 100000}, {60, 200000}, {60, 200000}} {
-		if n > 0 {
-			c.Models = append(c.Models, Model{ID: string(rune('a' + n)), Limits: Limits{30, 100000}})
+func TestScalingAndAliases(testContext *testing.T) {
+	config := DefaultConfig()
+	config.Models[0].Aliases = []string{"alias-a", "alias-b"}
+	for count, want := range []Limits{{30, 100000}, {60, 200000}, {60, 200000}} {
+		if count > 0 {
+			config.Models = append(config.Models, Model{ID: string(rune('a' + count)), Limits: Limits{30, 100000}})
 		}
-		got, err := c.EffectiveGlobal()
+		got, err := config.EffectiveGlobal()
 		if err != nil || got != want {
-			t.Fatalf("%d models: %v %v", n+1, got, err)
+			testContext.Fatalf("%d models: %v %v", count+1, got, err)
 		}
 	}
-	if c.User != (Limits{20, 40000}) {
-		t.Fatal("user allowances not doubled")
+	if config.User != (Limits{20, 40000}) {
+		testContext.Fatal("user allowances not doubled")
 	}
 }
 
-func TestConfigValidation(t *testing.T) {
+func TestConfigValidation(testContext *testing.T) {
 	for name, change := range map[string]func(*Config){
-		"zero user":       func(c *Config) { c.User.Requests = 0 },
-		"negative":        func(c *Config) { c.GlobalCeiling.Tokens = -1 },
-		"overflow":        func(c *Config) { c.Models[0].Limits.Tokens = 1 << 62 },
-		"duration":        func(c *Config) { c.RequestWindowSeconds = 1 << 62 },
-		"no models":       func(c *Config) { c.Models = nil },
-		"duplicate ID":    func(c *Config) { c.Models = append(c.Models, c.Models[0]) },
-		"alias collision": func(c *Config) { c.Models[0].Aliases = []string{"local-llm"} },
-		"empty alias":     func(c *Config) { c.Models[0].Aliases = []string{""} },
-		"whitespace":      func(c *Config) { c.Models[0].ID = " m " },
+		"zero user":       func(config *Config) { config.User.Requests = 0 },
+		"negative":        func(config *Config) { config.GlobalCeiling.Tokens = -1 },
+		"overflow":        func(config *Config) { config.Models[0].Limits.Tokens = 1 << 62 },
+		"duration":        func(config *Config) { config.RequestWindowSeconds = 1 << 62 },
+		"no models":       func(config *Config) { config.Models = nil },
+		"duplicate ID":    func(config *Config) { config.Models = append(config.Models, config.Models[0]) },
+		"alias collision": func(config *Config) { config.Models[0].Aliases = []string{"local-llm"} },
+		"empty alias":     func(config *Config) { config.Models[0].Aliases = []string{""} },
+		"whitespace":      func(config *Config) { config.Models[0].ID = " m " },
 	} {
-		t.Run(name, func(t *testing.T) {
-			c := DefaultConfig()
-			change(&c)
-			if _, err := c.EffectiveGlobal(); err == nil {
-				t.Fatal("accepted invalid config")
+		testContext.Run(name, func(testContext *testing.T) {
+			config := DefaultConfig()
+			change(&config)
+			if _, err := config.EffectiveGlobal(); err == nil {
+				testContext.Fatal("accepted invalid config")
 			}
 		})
 	}
-	file := filepath.Join(t.TempDir(), "quotas.json")
+	file := filepath.Join(testContext.TempDir(), "quotas.json")
 	valid, _ := json.Marshal(DefaultConfig())
 	for _, body := range []string{`{}`, `null`, string(valid) + ` {}`, `{"unknown":1}`, `{`} {
 		if err := os.WriteFile(file, []byte(body), 0600); err != nil {
-			t.Fatal(err)
+			testContext.Fatal(err)
 		}
 		if _, err := Load(file); err == nil {
-			t.Fatal("accepted invalid file", body)
+			testContext.Fatal("accepted invalid file", body)
 		}
 	}
 	if err := os.WriteFile(file, valid, 0600); err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
 	if _, err := Load(file); err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
 }
 
-func TestRequestLimitsAndWindows(t *testing.T) {
-	m, now := testManager(t, DefaultConfig())
-	for i := 0; i < 20; i++ {
-		if !m.CheckAndCount("alice").Allowed {
-			t.Fatal(i)
+func TestRequestLimitsAndWindows(testContext *testing.T) {
+	quotaManager, now := testManager(testContext, DefaultConfig())
+	for index := 0; index < 20; index++ {
+		if !quotaManager.CheckAndCount("alice").Allowed {
+			testContext.Fatal(index)
 		}
 	}
-	if d := m.CheckAndCount("alice"); d.Code != "user_request_limit" || d.RetryAfter != time.Minute {
-		t.Fatal(d)
+	if quotaDecision := quotaManager.CheckAndCount("alice"); quotaDecision.Code != "user_request_limit" || quotaDecision.RetryAfter != time.Minute {
+		testContext.Fatal(quotaDecision)
 	}
-	for i := 0; i < 10; i++ {
-		if !m.CheckAndCount("bob").Allowed {
-			t.Fatal(i)
+	for index := 0; index < 10; index++ {
+		if !quotaManager.CheckAndCount("bob").Allowed {
+			testContext.Fatal(index)
 		}
 	}
-	if d := m.CheckAndCount("bob"); d.Code != "global_request_limit" {
-		t.Fatal(d)
+	if quotaDecision := quotaManager.CheckAndCount("bob"); quotaDecision.Code != "global_request_limit" {
+		testContext.Fatal(quotaDecision)
 	}
-	if m.requests["bob"] != 10 || m.globalRequests != 30 {
-		t.Fatal("partial charge")
+	if quotaManager.requests["bob"] != 10 || quotaManager.globalRequests != 30 {
+		testContext.Fatal("partial charge")
 	}
 	*now = now.Add(time.Minute - time.Nanosecond)
-	if d := m.CheckAndCount("bob"); d.Allowed || d.RetryAfter != time.Nanosecond {
-		t.Fatal(d)
+	if quotaDecision := quotaManager.CheckAndCount("bob"); quotaDecision.Allowed || quotaDecision.RetryAfter != time.Nanosecond {
+		testContext.Fatal(quotaDecision)
 	}
 	*now = now.Add(time.Nanosecond)
-	if !m.CheckAndCount("alice").Allowed || m.globalRequests != 1 {
-		t.Fatal("window did not reset")
+	if !quotaManager.CheckAndCount("alice").Allowed || quotaManager.globalRequests != 1 {
+		testContext.Fatal("window did not reset")
 	}
 	*now = now.Add(5 * time.Minute)
-	if !m.CheckAndCount("alice").Allowed || m.globalRequests != 1 {
-		t.Fatal("idle windows did not reset")
+	if !quotaManager.CheckAndCount("alice").Allowed || quotaManager.globalRequests != 1 {
+		testContext.Fatal("idle windows did not reset")
 	}
-	if m.CheckAndCount("").Allowed {
-		t.Fatal("empty identity accepted")
+	if quotaManager.CheckAndCount("").Allowed {
+		testContext.Fatal("empty identity accepted")
 	}
 }
 
-func TestConcurrentGlobalAndUserLimits(t *testing.T) {
+func TestConcurrentGlobalAndUserLimits(testContext *testing.T) {
 	for _, sameUser := range []bool{true, false} {
-		m, _ := testManager(t, DefaultConfig())
+		quotaManager, _ := testManager(testContext, DefaultConfig())
 		var count atomic.Int64
 		var wg sync.WaitGroup
-		for i := 0; i < 200; i++ {
+		for index := 0; index < 200; index++ {
 			wg.Add(1)
-			go func(i int) {
+			go func(index int) {
 				defer wg.Done()
 				user := "alice"
 				if !sameUser {
-					user = string(rune(1000 + i))
+					user = string(rune(1000 + index))
 				}
-				if m.CheckAndCount(user).Allowed {
+				if quotaManager.CheckAndCount(user).Allowed {
 					count.Add(1)
 				}
-			}(i)
+			}(index)
 		}
 		wg.Wait()
 		want := int64(30)
@@ -137,130 +137,130 @@ func TestConcurrentGlobalAndUserLimits(t *testing.T) {
 			want = 20
 		}
 		if count.Load() != want {
-			t.Fatalf("admitted %d want %d", count.Load(), want)
+			testContext.Fatalf("admitted %d want %d", count.Load(), want)
 		}
 	}
 }
 
-func TestReloadPreservesUsage(t *testing.T) {
-	c := DefaultConfig()
-	m, _ := testManager(t, c)
-	for i := 0; i < 20; i++ {
-		m.CheckAndCount("alice")
+func TestReloadPreservesUsage(testContext *testing.T) {
+	config := DefaultConfig()
+	quotaManager, _ := testManager(testContext, config)
+	for index := 0; index < 20; index++ {
+		quotaManager.CheckAndCount("alice")
 	}
-	r, d := m.ReserveTokens("alice", 40000)
-	if !d.Allowed {
-		t.Fatal(d)
+	reservation, quotaDecision := quotaManager.ReserveTokens("alice", 40000)
+	if !quotaDecision.Allowed {
+		testContext.Fatal(quotaDecision)
 	}
-	c.Models = append(c.Models, Model{ID: "second", Limits: Limits{30, 100000}})
-	if err := m.Reconfigure(c); err != nil {
-		t.Fatal(err)
+	config.Models = append(config.Models, Model{ID: "second", Limits: Limits{30, 100000}})
+	if err := quotaManager.Reconfigure(config); err != nil {
+		testContext.Fatal(err)
 	}
-	if m.globalRequests != 20 || m.globalLimit.Requests != 60 || m.CheckAndCount("alice").Allowed {
-		t.Fatal("reload reset usage")
+	if quotaManager.globalRequests != 20 || quotaManager.globalLimit.Requests != 60 || quotaManager.CheckAndCount("alice").Allowed {
+		testContext.Fatal("reload reset usage")
 	}
-	if available(m.budgets["alice"], m.userLimit.Tokens) != 0 {
-		t.Fatal("reload reset holds")
+	if available(quotaManager.budgets["alice"], quotaManager.userLimit.Tokens) != 0 {
+		testContext.Fatal("reload reset holds")
 	}
-	c.GlobalCeiling.Requests = 10
-	if err := m.Reconfigure(c); err != nil {
-		t.Fatal(err)
+	config.GlobalCeiling.Requests = 10
+	if err := quotaManager.Reconfigure(config); err != nil {
+		testContext.Fatal(err)
 	}
-	if d := m.CheckAndCount("bob"); d.Code != "global_request_limit" {
-		t.Fatal(d)
+	if quotaDecision := quotaManager.CheckAndCount("bob"); quotaDecision.Code != "global_request_limit" {
+		testContext.Fatal(quotaDecision)
 	}
-	c.RequestWindowSeconds = 5
-	if err := m.Reconfigure(c); err == nil || m.globalLimit.Requests != 10 {
-		t.Fatal("window reload mutated state")
+	config.RequestWindowSeconds = 5
+	if err := quotaManager.Reconfigure(config); err == nil || quotaManager.globalLimit.Requests != 10 {
+		testContext.Fatal("window reload mutated state")
 	}
-	if err := m.SettleTokens(r, 10); err != nil {
-		t.Fatal(err)
+	if err := quotaManager.SettleTokens(reservation, 10); err != nil {
+		testContext.Fatal(err)
 	}
 }
 
-func TestTokenBudgetLifecycle(t *testing.T) {
-	m, now := testManager(t, DefaultConfig())
-	r, d := m.ReserveTokens("alice", 40000)
-	if !d.Allowed {
-		t.Fatal(d)
+func TestTokenBudgetLifecycle(testContext *testing.T) {
+	quotaManager, now := testManager(testContext, DefaultConfig())
+	reservation, quotaDecision := quotaManager.ReserveTokens("alice", 40000)
+	if !quotaDecision.Allowed {
+		testContext.Fatal(quotaDecision)
 	}
-	if d = m.CheckAndCount("alice"); d.Code != "user_token_limit" || m.globalRequests != 0 {
-		t.Fatal(d)
+	if quotaDecision = quotaManager.CheckAndCount("alice"); quotaDecision.Code != "user_token_limit" || quotaManager.globalRequests != 0 {
+		testContext.Fatal(quotaDecision)
 	}
-	if err := m.SettleTokens(r, 10000); err != nil {
-		t.Fatal(err)
+	if err := quotaManager.SettleTokens(reservation, 10000); err != nil {
+		testContext.Fatal(err)
 	}
-	if err := m.SettleTokens(r, 0); err == nil {
-		t.Fatal("double settlement accepted")
+	if err := quotaManager.SettleTokens(reservation, 0); err == nil {
+		testContext.Fatal("double settlement accepted")
 	}
-	if available(m.budgets["alice"], 40000) != 30000 || !m.CheckAndCount("alice").Allowed {
-		t.Fatal("unused hold not released")
+	if available(quotaManager.budgets["alice"], 40000) != 30000 || !quotaManager.CheckAndCount("alice").Allowed {
+		testContext.Fatal("unused hold not released")
 	}
-	old, d := m.ReserveTokens("alice", 30000)
-	if !d.Allowed {
-		t.Fatal(d)
+	old, quotaDecision := quotaManager.ReserveTokens("alice", 30000)
+	if !quotaDecision.Allowed {
+		testContext.Fatal(quotaDecision)
 	}
 	*now = now.Add(time.Hour)
-	current, d := m.ReserveTokens("alice", 40000)
-	if !d.Allowed {
-		t.Fatal(d)
+	current, quotaDecision := quotaManager.ReserveTokens("alice", 40000)
+	if !quotaDecision.Allowed {
+		testContext.Fatal(quotaDecision)
 	}
-	if err := m.SettleTokens(old, 20000); err != nil {
-		t.Fatal(err)
+	if err := quotaManager.SettleTokens(old, 20000); err != nil {
+		testContext.Fatal(err)
 	}
-	if available(m.budgets["alice"], 40000) != 0 {
-		t.Fatal("old settlement changed new window")
+	if available(quotaManager.budgets["alice"], 40000) != 0 {
+		testContext.Fatal("old settlement changed new window")
 	}
-	if err := m.SettleTokens(current, 0); err != nil {
-		t.Fatal(err)
+	if err := quotaManager.SettleTokens(current, 0); err != nil {
+		testContext.Fatal(err)
 	}
-	if !m.CheckAndCount("alice").Allowed {
-		t.Fatal("release failed")
+	if !quotaManager.CheckAndCount("alice").Allowed {
+		testContext.Fatal("release failed")
 	}
 }
 
-func TestGlobalTokenExhaustionAndAtomicReserve(t *testing.T) {
-	m, _ := testManager(t, DefaultConfig())
+func TestGlobalTokenExhaustionAndAtomicReserve(testContext *testing.T) {
+	quotaManager, _ := testManager(testContext, DefaultConfig())
 	for _, user := range []string{"a", "b"} {
-		r, d := m.ReserveTokens(user, 40000)
-		if !d.Allowed {
-			t.Fatal(d)
+		reservation, quotaDecision := quotaManager.ReserveTokens(user, 40000)
+		if !quotaDecision.Allowed {
+			testContext.Fatal(quotaDecision)
 		}
-		if err := m.SettleTokens(r, 40000); err != nil {
-			t.Fatal(err)
+		if err := quotaManager.SettleTokens(reservation, 40000); err != nil {
+			testContext.Fatal(err)
 		}
 	}
-	if _, d := m.ReserveTokens("c", 30000); d.Code != "global_token_limit" {
-		t.Fatal(d)
+	if _, quotaDecision := quotaManager.ReserveTokens("c", 30000); quotaDecision.Code != "global_token_limit" {
+		testContext.Fatal(quotaDecision)
 	}
-	if m.budgets["c"] != nil || m.globalBudget.reserved != 0 {
-		t.Fatal("partial reservation")
+	if quotaManager.budgets["c"] != nil || quotaManager.globalBudget.reserved != 0 {
+		testContext.Fatal("partial reservation")
 	}
-	_, d := m.ReserveTokens("c", 20000)
-	if !d.Allowed {
-		t.Fatal(d)
+	_, quotaDecision := quotaManager.ReserveTokens("c", 20000)
+	if !quotaDecision.Allowed {
+		testContext.Fatal(quotaDecision)
 	}
-	if d = m.CheckAndCount("d"); d.Code != "global_token_limit" || m.globalRequests != 0 {
-		t.Fatal(d)
+	if quotaDecision = quotaManager.CheckAndCount("d"); quotaDecision.Code != "global_token_limit" || quotaManager.globalRequests != 0 {
+		testContext.Fatal(quotaDecision)
 	}
 }
 
-func TestConcurrentReservations(t *testing.T) {
-	m, _ := testManager(t, DefaultConfig())
+func TestConcurrentReservations(testContext *testing.T) {
+	quotaManager, _ := testManager(testContext, DefaultConfig())
 	var count atomic.Int64
 	var wg sync.WaitGroup
-	for i := 0; i < 200; i++ {
+	for index := 0; index < 200; index++ {
 		wg.Add(1)
-		go func(i int) {
+		go func(index int) {
 			defer wg.Done()
-			_, d := m.ReserveTokens(string(rune(1000+i)), 1000)
-			if d.Allowed {
+			_, quotaDecision := quotaManager.ReserveTokens(string(rune(1000+index)), 1000)
+			if quotaDecision.Allowed {
 				count.Add(1)
 			}
-		}(i)
+		}(index)
 	}
 	wg.Wait()
-	if count.Load() != 100 || m.globalBudget.reserved != 100000 {
-		t.Fatal("oversubscribed tokens")
+	if count.Load() != 100 || quotaManager.globalBudget.reserved != 100000 {
+		testContext.Fatal("oversubscribed tokens")
 	}
 }

@@ -68,24 +68,26 @@ func Open(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
 	}
-	s := &Store{Dir: dir}
-	if err := s.checkDir(); err != nil {
+	keyStore := &Store{Dir: dir}
+	if err := keyStore.checkDir(); err != nil {
 		return nil, err
 	}
-	return s, nil
+	return keyStore, nil
 }
-func (s *Store) checkDir() error {
-	info, err := os.Lstat(s.Dir)
+func (keyStore *Store) checkDir() error {
+	info, err := os.Lstat(keyStore.Dir)
 	if err != nil {
 		return err
 	}
 	if !info.IsDir() || info.Mode().Perm()&0077 != 0 {
-		return fmt.Errorf("key directory must be a real directory accessible only to its owner (chmod 700): %s", s.Dir)
+		return fmt.Errorf("key directory must be a real directory accessible only to its owner (chmod 700): %s", keyStore.Dir)
 	}
 	return nil
 }
-func (s *Store) CredentialsPath() string { return filepath.Join(s.Dir, "credentials.json") }
-func (s *Store) serverPath() string      { return filepath.Join(s.Dir, "api-keys.json") }
+func (keyStore *Store) CredentialsPath() string {
+	return filepath.Join(keyStore.Dir, "credentials.json")
+}
+func (keyStore *Store) serverPath() string { return filepath.Join(keyStore.Dir, "api-keys.json") }
 
 func secureFile(path string) error {
 	info, err := os.Lstat(path)
@@ -162,19 +164,19 @@ func validUser(user string) bool {
 	if len(user) == 0 || len(user) > 64 {
 		return false
 	}
-	for _, c := range user {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("._@-", c)) {
+	for _, character := range user {
+		if !(character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || strings.ContainsRune("._@-", character)) {
 			return false
 		}
 	}
 	return true
 }
-func (s *Store) loadKeys() (keyFile, error) {
+func (keyStore *Store) loadKeys() (keyFile, error) {
 	result := keyFile{Version: 1, Keys: []Record{}}
-	if err := s.checkDir(); err != nil {
+	if err := keyStore.checkDir(); err != nil {
 		return result, err
 	}
-	if err := readJSON(s.serverPath(), &result); err != nil {
+	if err := readJSON(keyStore.serverPath(), &result); err != nil {
 		return result, err
 	}
 	if result.Version != 1 || result.Keys == nil {
@@ -191,12 +193,12 @@ func (s *Store) loadKeys() (keyFile, error) {
 	}
 	return result, nil
 }
-func (s *Store) loadCredentials() (credentials, error) {
+func (keyStore *Store) loadCredentials() (credentials, error) {
 	result := credentials{Version: 1, Keys: map[string]SavedKey{}}
-	if err := s.checkDir(); err != nil {
+	if err := keyStore.checkDir(); err != nil {
 		return result, err
 	}
-	if err := readJSON(s.CredentialsPath(), &result); err != nil {
+	if err := readJSON(keyStore.CredentialsPath(), &result); err != nil {
 		return result, err
 	}
 	if result.Version != 1 || result.Keys == nil {
@@ -205,26 +207,26 @@ func (s *Store) loadCredentials() (credentials, error) {
 	return result, nil
 }
 func localURL(raw string) (string, error) {
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "http" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+	parsedURL, err := url.Parse(raw)
+	if err != nil || parsedURL.Scheme != "http" || parsedURL.User != nil || parsedURL.RawQuery != "" || parsedURL.Fragment != "" || (parsedURL.Path != "" && parsedURL.Path != "/") {
 		return "", errors.New("base URL must be a local HTTP origin without a path or credentials")
 	}
-	switch u.Hostname() {
+	switch parsedURL.Hostname() {
 	case "127.0.0.1", "localhost", "::1":
 	default:
 		return "", errors.New("base URL must use a loopback host")
 	}
-	port, portErr := strconv.Atoi(u.Port())
+	port, portErr := strconv.Atoi(parsedURL.Port())
 	if portErr != nil || port < 1 || port > 65535 {
 		return "", errors.New("base URL must include a valid gateway port")
 	}
-	u.Path = ""
-	return u.String(), nil
+	parsedURL.Path = ""
+	return parsedURL.String(), nil
 }
 
 // Create saves the hash first, then the client copy, under a cross-process lock.
 // A failed client write rolls back registration; the CLI can display the saved key.
-func (s *Store) Create(user, baseURL string) (Record, error) {
+func (keyStore *Store) Create(user, baseURL string) (Record, error) {
 	var record Record
 	if !validUser(user) {
 		return record, errors.New("user must be 1-64 letters, digits, dots, underscores, @ or hyphens")
@@ -233,16 +235,16 @@ func (s *Store) Create(user, baseURL string) (Record, error) {
 	if err != nil {
 		return record, err
 	}
-	unlock, err := s.lock()
+	unlock, err := keyStore.lock()
 	if err != nil {
 		return record, err
 	}
 	defer unlock()
-	keys, err := s.loadKeys()
+	keys, err := keyStore.loadKeys()
 	if err != nil {
 		return record, err
 	}
-	saved, err := s.loadCredentials()
+	saved, err := keyStore.loadCredentials()
 	if err != nil {
 		return record, err
 	}
@@ -260,14 +262,14 @@ func (s *Store) Create(user, baseURL string) (Record, error) {
 	hash := sha256.Sum256([]byte(token))
 	record = Record{ID: id, UserID: user, Hash: hex.EncodeToString(hash[:]), CreatedAt: time.Now().UTC()}
 	keys.Keys = append(keys.Keys, record)
-	if err := writeJSON(s.serverPath(), keys); err != nil {
+	if err := writeJSON(keyStore.serverPath(), keys); err != nil {
 		return Record{}, err
 	}
 	saved.Keys[id] = SavedKey{UserID: user, APIKey: token, BaseURL: baseURL}
 	saved.ActiveKeyID = id
-	if err := writeJSON(s.CredentialsPath(), saved); err != nil {
+	if err := writeJSON(keyStore.CredentialsPath(), saved); err != nil {
 		keys.Keys = keys.Keys[:len(keys.Keys)-1]
-		rollbackErr := writeJSON(s.serverPath(), keys)
+		rollbackErr := writeJSON(keyStore.serverPath(), keys)
 		return Record{}, errors.Join(errors.New("could not save client credentials"), err, rollbackErr)
 	}
 	return record, nil
@@ -275,12 +277,12 @@ func (s *Store) Create(user, baseURL string) (Record, error) {
 
 // Verify reads the atomically replaced hash file on every request, so revocation
 // affects the next request without restarting the gateway.
-func (s *Store) Verify(token string) (Principal, error) {
+func (keyStore *Store) Verify(token string) (Principal, error) {
 	if len(token) != 64 || !strings.HasPrefix(token, "lgw_") || token[20] != '_' {
 		return Principal{}, ErrInvalidKey
 	}
 	id := token[4:20]
-	keys, err := s.loadKeys()
+	keys, err := keyStore.loadKeys()
 	if err != nil {
 		return Principal{}, err
 	}
@@ -297,30 +299,30 @@ func (s *Store) Verify(token string) (Principal, error) {
 	}
 	return Principal{}, ErrInvalidKey
 }
-func (s *Store) List() ([]Record, error) {
-	keys, err := s.loadKeys()
+func (keyStore *Store) List() ([]Record, error) {
+	keys, err := keyStore.loadKeys()
 	return keys.Keys, err
 }
-func (s *Store) Revoke(id string) error {
-	unlock, err := s.lock()
+func (keyStore *Store) Revoke(id string) error {
+	unlock, err := keyStore.lock()
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	keys, err := s.loadKeys()
+	keys, err := keyStore.loadKeys()
 	if err != nil {
 		return err
 	}
-	for i := range keys.Keys {
-		if keys.Keys[i].ID == id {
-			keys.Keys[i].Revoked = true
-			return writeJSON(s.serverPath(), keys)
+	for keyIndex := range keys.Keys {
+		if keys.Keys[keyIndex].ID == id {
+			keys.Keys[keyIndex].Revoked = true
+			return writeJSON(keyStore.serverPath(), keys)
 		}
 	}
 	return errors.New("key ID not found")
 }
-func (s *Store) Show(id string) (string, error) {
-	saved, err := s.loadCredentials()
+func (keyStore *Store) Show(id string) (string, error) {
+	saved, err := keyStore.loadCredentials()
 	if err != nil {
 		return "", err
 	}
@@ -331,18 +333,18 @@ func (s *Store) Show(id string) (string, error) {
 	if !ok {
 		return "", errors.New("no saved key selected; create a key first")
 	}
-	if _, err := s.Verify(key.APIKey); err != nil {
+	if _, err := keyStore.Verify(key.APIKey); err != nil {
 		return "", err
 	}
 	return key.APIKey, nil
 }
-func (s *Store) Use(id string) error {
-	unlock, err := s.lock()
+func (keyStore *Store) Use(id string) error {
+	unlock, err := keyStore.lock()
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	saved, err := s.loadCredentials()
+	saved, err := keyStore.loadCredentials()
 	if err != nil {
 		return err
 	}
@@ -350,9 +352,9 @@ func (s *Store) Use(id string) error {
 	if !ok {
 		return errors.New("saved key ID not found")
 	}
-	if _, err := s.Verify(key.APIKey); err != nil {
+	if _, err := keyStore.Verify(key.APIKey); err != nil {
 		return err
 	}
 	saved.ActiveKeyID = id
-	return writeJSON(s.CredentialsPath(), saved)
+	return writeJSON(keyStore.CredentialsPath(), saved)
 }

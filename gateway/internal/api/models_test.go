@@ -20,26 +20,26 @@ type fakeCounter struct {
 	failure error
 }
 
-func (f *fakeCounter) CountInput(context.Context, registry.Model, any) (int, error) {
-	f.calls.Add(1)
-	return f.count, f.failure
+func (counter *fakeCounter) CountInput(context.Context, registry.Model, any) (int, error) {
+	counter.calls.Add(1)
+	return counter.count, counter.failure
 }
 
-func registeredTest(t *testing.T, c registry.Config, f InputCounter) *RegisteredHandler {
-	t.Helper()
-	h, err := NewRegisteredHandler(userVerifier{}, c, f)
+func registeredTest(testContext *testing.T, config registry.Config, counter InputCounter) *RegisteredHandler {
+	testContext.Helper()
+	handler, err := NewRegisteredHandler(userVerifier{}, config, counter)
 	if err != nil {
-		t.Fatal(err)
+		testContext.Fatal(err)
 	}
 	// These GATE-04 tests isolate admission; GATE-06 tests use the live constructor.
-	h.afterAdmission = nil
-	h.report = func(TimingRecord) {}
-	t.Cleanup(h.Close)
-	return h
+	handler.afterAdmission = nil
+	handler.report = func(TimingRecord) {}
+	testContext.Cleanup(handler.Close)
+	return handler
 }
 
-func TestModelLookupAndBudgets(t *testing.T) {
-	for _, tc := range []struct {
+func TestModelLookupAndBudgets(testContext *testing.T) {
+	for _, testCase := range []struct {
 		name, body, code string
 		status, count    int
 	}{
@@ -49,176 +49,176 @@ func TestModelLookupAndBudgets(t *testing.T) {
 		{"default", validBody, "not_implemented", 501, 5},
 		{"alias", strings.Replace(validBody, "local-llm", "default", 1), "not_implemented", 501, 5},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			c := registry.Default()
-			f := &fakeCounter{count: tc.count}
-			h := registeredTest(t, c, f)
-			w := quotaRequest(h, "POST", "/v1/chat/completions", "alice-one", tc.body)
-			if w.Code != tc.status || !strings.Contains(w.Body.String(), tc.code) {
-				t.Fatal(w.Code, w.Body)
+		testContext.Run(testCase.name, func(testContext *testing.T) {
+			config := registry.Default()
+			counter := &fakeCounter{count: testCase.count}
+			handler := registeredTest(testContext, config, counter)
+			responseRecorder := quotaRequest(handler, "POST", "/v1/chat/completions", "alice-one", testCase.body)
+			if responseRecorder.Code != testCase.status || !strings.Contains(responseRecorder.Body.String(), testCase.code) {
+				testContext.Fatal(responseRecorder.Code, responseRecorder.Body)
 			}
-			if tc.status == 404 || tc.code == "output_limit_exceeded" {
-				if f.calls.Load() != 0 {
-					t.Fatal("invalid request reached backend")
+			if testCase.status == 404 || testCase.code == "output_limit_exceeded" {
+				if counter.calls.Load() != 0 {
+					testContext.Fatal("invalid request reached backend")
 				}
 			}
 			// Even the successful validation stub must release its token hold.
-			if _, d := h.quotas.ReserveTokens("alice", 40000); !d.Allowed {
-				t.Fatal("partial or leaked token charge", d)
+			if _, quotaDecision := handler.quotas.ReserveTokens("alice", 40000); !quotaDecision.Allowed {
+				testContext.Fatal("partial or leaked token charge", quotaDecision)
 			}
 		})
 	}
 }
 
-func TestValidKeysCanListAndRequestEveryModel(t *testing.T) {
-	c := registry.Default()
-	second := c.Models[0]
+func TestValidKeysCanListAndRequestEveryModel(testContext *testing.T) {
+	config := registry.Default()
+	second := config.Models[0]
 	second.ID = "second"
 	second.Aliases = nil
 	second.Backend.RuntimeID = "second"
 	second.Backend.BaseURL = "http://127.0.0.1:8082"
-	c.Models = append(c.Models, second)
-	h := registeredTest(t, c, &fakeCounter{count: 5})
+	config.Models = append(config.Models, second)
+	handler := registeredTest(testContext, config, &fakeCounter{count: 5})
 	for _, key := range []string{"alice-one", "bob"} {
-		w := quotaRequest(h, "GET", "/v1/models", key, "")
-		if w.Code != 200 || !strings.Contains(w.Body.String(), "local-llm") || strings.Contains(w.Body.String(), "base_url") {
-			t.Fatal(w.Code, w.Body)
+		responseRecorder := quotaRequest(handler, "GET", "/v1/models", key, "")
+		if responseRecorder.Code != 200 || !strings.Contains(responseRecorder.Body.String(), "local-llm") || strings.Contains(responseRecorder.Body.String(), "base_url") {
+			testContext.Fatal(responseRecorder.Code, responseRecorder.Body)
 		}
-		if !strings.Contains(w.Body.String(), "second") {
-			t.Fatal("authenticated user cannot see all registrations")
+		if !strings.Contains(responseRecorder.Body.String(), "second") {
+			testContext.Fatal("authenticated user cannot see all registrations")
 		}
 		for _, name := range []string{"local-llm", "default", "second"} {
-			w := quotaRequest(h, "POST", ChatCompletionsPath, key, strings.Replace(validBody, "local-llm", name, 1))
-			if w.Code != 501 || !strings.Contains(w.Body.String(), "not_implemented") {
-				t.Fatal("valid key did not reach validated stub", name, w.Code, w.Body)
+			responseRecorder := quotaRequest(handler, "POST", ChatCompletionsPath, key, strings.Replace(validBody, "local-llm", name, 1))
+			if responseRecorder.Code != 501 || !strings.Contains(responseRecorder.Body.String(), "not_implemented") {
+				testContext.Fatal("valid key did not reach validated stub", name, responseRecorder.Code, responseRecorder.Body)
 			}
 		}
 	}
-	f := &fakeCounter{count: 5}
-	h = registeredTest(t, c, f)
+	counter := &fakeCounter{count: 5}
+	handler = registeredTest(testContext, config, counter)
 	for _, key := range []string{"", "invalid"} {
-		if w := quotaRequest(h, "GET", ModelsPath, key, ""); w.Code != 401 {
-			t.Fatal("missing/invalid key could list models", w.Code)
+		if responseRecorder := quotaRequest(handler, "GET", ModelsPath, key, ""); responseRecorder.Code != 401 {
+			testContext.Fatal("missing/invalid key could list models", responseRecorder.Code)
 		}
 		for _, name := range []string{"local-llm", "second", "unknown"} {
-			w := quotaRequest(h, "POST", ChatCompletionsPath, key, strings.Replace(validBody, "local-llm", name, 1))
-			if w.Code != 401 {
-				t.Fatal("authentication did not precede model validation", w.Code)
+			responseRecorder := quotaRequest(handler, "POST", ChatCompletionsPath, key, strings.Replace(validBody, "local-llm", name, 1))
+			if responseRecorder.Code != 401 {
+				testContext.Fatal("authentication did not precede model validation", responseRecorder.Code)
 			}
 		}
 	}
-	if f.calls.Load() != 0 {
-		t.Fatal("unauthenticated request reached runtime")
+	if counter.calls.Load() != 0 {
+		testContext.Fatal("unauthenticated request reached runtime")
 	}
 }
 
-func TestModelAliasAndReloadDoNotResetQuota(t *testing.T) {
-	c := registry.Default()
-	c.Models[0].Limits.Requests = 1
-	second := c.Models[0]
+func TestModelAliasAndReloadDoNotResetQuota(testContext *testing.T) {
+	config := registry.Default()
+	config.Models[0].Limits.Requests = 1
+	second := config.Models[0]
 	second.ID = "second"
 	second.Aliases = nil
 	second.Limits.Requests = 30
 	second.Backend.RuntimeID = "second"
 	second.Backend.BaseURL = "http://127.0.0.1:8082"
-	c.Models = append(c.Models, second)
-	h := registeredTest(t, c, &fakeCounter{count: 5})
-	if w := quotaRequest(h, "POST", "/v1/chat/completions", "alice-one", validBody); w.Code != 501 {
-		t.Fatal(w.Code)
+	config.Models = append(config.Models, second)
+	handler := registeredTest(testContext, config, &fakeCounter{count: 5})
+	if responseRecorder := quotaRequest(handler, "POST", "/v1/chat/completions", "alice-one", validBody); responseRecorder.Code != 501 {
+		testContext.Fatal(responseRecorder.Code)
 	}
-	if err := h.Reload(c); err != nil {
-		t.Fatal(err)
+	if err := handler.Reload(config); err != nil {
+		testContext.Fatal(err)
 	}
-	w := quotaRequest(h, "POST", "/v1/chat/completions", "alice-two", strings.Replace(validBody, "local-llm", "default", 1))
-	if w.Code != 429 || !strings.Contains(w.Body.String(), "model_request_limit") {
-		t.Fatal(w.Code, w.Body)
+	responseRecorder := quotaRequest(handler, "POST", "/v1/chat/completions", "alice-two", strings.Replace(validBody, "local-llm", "default", 1))
+	if responseRecorder.Code != 429 || !strings.Contains(responseRecorder.Body.String(), "model_request_limit") {
+		testContext.Fatal(responseRecorder.Code, responseRecorder.Body)
 	}
-	c.Models[0].Backend.BaseURL = "http://127.0.0.1:8099"
-	if err := h.Reload(c); err == nil {
-		t.Fatal("runtime change accepted")
+	config.Models[0].Backend.BaseURL = "http://127.0.0.1:8099"
+	if err := handler.Reload(config); err == nil {
+		testContext.Fatal("runtime change accepted")
 	}
 }
 
-func TestTwoFakeRunningModels(t *testing.T) {
+func TestTwoFakeRunningModels(testContext *testing.T) {
 	var tokenCalls [2]atomic.Int64
-	c := registry.Default()
-	second := c.Models[0]
+	config := registry.Default()
+	second := config.Models[0]
 	second.ID = "second"
 	second.Aliases = []string{"engineer"}
 	second.Backend.RuntimeID = "second"
 	second.Backend.ExpectedModel = "second"
-	c.Models = append(c.Models, second)
-	for index := range c.Models {
+	config.Models = append(config.Models, second)
+	for index := range config.Models {
 		index := index
-		backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			switch r.URL.Path {
+		backend := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+			switch request.URL.Path {
 			case "/health":
-				json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+				json.NewEncoder(responseWriter).Encode(map[string]string{"status": "ok"})
 			case "/v1/models":
-				json.NewEncoder(w).Encode(map[string]any{"data": []map[string]string{{"id": c.Models[index].Backend.ExpectedModel}}})
+				json.NewEncoder(responseWriter).Encode(map[string]any{"data": []map[string]string{{"id": config.Models[index].Backend.ExpectedModel}}})
 			case "/slots":
-				json.NewEncoder(w).Encode([]map[string]int{{"n_ctx": 4096}})
+				json.NewEncoder(responseWriter).Encode([]map[string]int{{"n_ctx": 4096}})
 			case "/apply-template":
-				json.NewEncoder(w).Encode(map[string]string{"prompt": "templated message"})
+				json.NewEncoder(responseWriter).Encode(map[string]string{"prompt": "templated message"})
 			case "/tokenize":
 				tokenCalls[index].Add(1)
-				json.NewEncoder(w).Encode(map[string]any{"tokens": []int{1, 2, 3}})
+				json.NewEncoder(responseWriter).Encode(map[string]any{"tokens": []int{1, 2, 3}})
 			default:
-				t.Error("unexpected generation request")
-				http.Error(w, "no inference", 500)
+				testContext.Error("unexpected generation request")
+				http.Error(responseWriter, "no inference", 500)
 			}
 		}))
-		t.Cleanup(backend.Close)
-		c.Models[index].Backend.BaseURL = backend.URL
+		testContext.Cleanup(backend.Close)
+		config.Models[index].Backend.BaseURL = backend.URL
 	}
-	h := registeredTest(t, c, nil)
+	handler := registeredTest(testContext, config, nil)
 	for _, name := range []string{"default", "engineer"} {
-		w := quotaRequest(h, "POST", "/v1/chat/completions", "alice-one", strings.Replace(validBody, "local-llm", name, 1))
-		if w.Code != 501 {
-			t.Fatal(w.Code, w.Body)
+		responseRecorder := quotaRequest(handler, "POST", "/v1/chat/completions", "alice-one", strings.Replace(validBody, "local-llm", name, 1))
+		if responseRecorder.Code != 501 {
+			testContext.Fatal(responseRecorder.Code, responseRecorder.Body)
 		}
 	}
 	if tokenCalls[0].Load() != 1 || tokenCalls[1].Load() != 1 {
-		t.Fatal("models not independently validated")
+		testContext.Fatal("models not independently validated")
 	}
 }
 
-func TestRuntimeFailureIsSanitized(t *testing.T) {
-	h := registeredTest(t, registry.Default(), &fakeCounter{failure: errors.New("private diagnostic")})
-	w := quotaRequest(h, "POST", "/v1/chat/completions", "alice-one", validBody)
-	if w.Code != 503 || strings.Contains(w.Body.String(), "private") {
-		t.Fatal(w.Code, w.Body)
+func TestRuntimeFailureIsSanitized(testContext *testing.T) {
+	handler := registeredTest(testContext, registry.Default(), &fakeCounter{failure: errors.New("private diagnostic")})
+	responseRecorder := quotaRequest(handler, "POST", "/v1/chat/completions", "alice-one", validBody)
+	if responseRecorder.Code != 503 || strings.Contains(responseRecorder.Body.String(), "private") {
+		testContext.Fatal(responseRecorder.Code, responseRecorder.Body)
 	}
 }
 
-func TestConcurrentRegistryReload(t *testing.T) {
-	c := registry.Default()
-	h := registeredTest(t, c, &fakeCounter{count: 5})
+func TestConcurrentRegistryReload(testContext *testing.T) {
+	config := registry.Default()
+	handler := registeredTest(testContext, config, &fakeCounter{count: 5})
 	var wg sync.WaitGroup
-	for i := 0; i < 30; i++ {
+	for index := 0; index < 30; index++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := h.Reload(c); err != nil {
-				t.Error(err)
+			if err := handler.Reload(config); err != nil {
+				testContext.Error(err)
 			}
-			w := quotaRequest(h, "GET", "/v1/models", "alice-one", "")
-			if w.Code != 200 {
-				t.Error(w.Code)
+			responseRecorder := quotaRequest(handler, "GET", "/v1/models", "alice-one", "")
+			if responseRecorder.Code != 200 {
+				testContext.Error(responseRecorder.Code)
 			}
 		}()
 	}
 	wg.Wait()
 }
 
-func TestGlobalDenialBeforeModelLookup(t *testing.T) {
-	c := registry.Default()
-	c.Quotas.User.Requests = 1
-	f := &fakeCounter{count: 5}
-	h := registeredTest(t, c, f)
-	quotaRequest(h, "POST", "/v1/chat/completions", "alice-one", validBody)
-	w := quotaRequest(h, "POST", "/v1/chat/completions", "alice-two", strings.Replace(validBody, "local-llm", "unknown", 1))
-	if w.Code != 429 || f.calls.Load() != 1 {
-		t.Fatal("lookup preceded quota check")
+func TestGlobalDenialBeforeModelLookup(testContext *testing.T) {
+	config := registry.Default()
+	config.Quotas.User.Requests = 1
+	counter := &fakeCounter{count: 5}
+	handler := registeredTest(testContext, config, counter)
+	quotaRequest(handler, "POST", "/v1/chat/completions", "alice-one", validBody)
+	responseRecorder := quotaRequest(handler, "POST", "/v1/chat/completions", "alice-two", strings.Replace(validBody, "local-llm", "unknown", 1))
+	if responseRecorder.Code != 429 || counter.calls.Load() != 1 {
+		testContext.Fatal("lookup preceded quota check")
 	}
 }

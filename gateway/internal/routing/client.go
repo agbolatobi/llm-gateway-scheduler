@@ -56,9 +56,9 @@ func NewClientWithHeaderTimeout(headerTimeout time.Duration) *Client {
 	}}
 }
 
-func (c *Client) CloseIdleConnections() { c.http.CloseIdleConnections() }
+func (client *Client) CloseIdleConnections() { client.http.CloseIdleConnections() }
 
-func (c *Client) Send(ctx context.Context, route Route, request Request) (Attempt, error) {
+func (client *Client) Send(ctx context.Context, route Route, request Request) (Attempt, error) {
 	var attempt Attempt
 	if route.baseURL == "" || route.backendModel == "" {
 		return attempt, failure(503, "route_unavailable", "No eligible configured backend is available.", nil)
@@ -111,7 +111,7 @@ func (c *Client) Send(ctx context.Context, route Route, request Request) (Attemp
 	// A non-empty POST without GetBody or idempotency headers is not replayable
 	// by net/http, including when a reused connection fails before a write.
 	outbound.GetBody = nil
-	response, err := c.http.Do(outbound)
+	response, err := client.http.Do(outbound)
 	attempt.MayHaveRun = connected.Load()
 	if err != nil {
 		return attempt, transportError(err)

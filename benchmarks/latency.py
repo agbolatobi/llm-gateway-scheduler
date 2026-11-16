@@ -109,7 +109,9 @@ def request_metrics(raw, native):
         ):
             raise ValueError(f"Raw and metric identities disagree for {key}")
     start = (raw or {}).get("start_perf_ns")
-    first, done, problem = stream_timing(raw) if raw is not None else (None, None, "missing_raw")
+    first, done, problem = (
+        stream_timing(raw) if raw is not None else (None, None, "missing_raw")
+    )
     metadata_sources = [row["metadata"] for row in (raw, native) if row is not None]
     http_status = (raw or {}).get("status")
     if any(meta.get("was_cancelled") for meta in metadata_sources):
@@ -128,14 +130,20 @@ def request_metrics(raw, native):
         status = problem or "success"
     ttft = (first - start) / 1_000_000 if first is not None else None
     result = {
-        "schema_version": 1, "request_id": key,
+        "schema_version": 1,
+        "request_id": key,
         "conversation_id": metadata.get("conversation_id"),
-        "benchmark_phase": metadata["benchmark_phase"], "status": status,
+        "benchmark_phase": metadata["benchmark_phase"],
+        "status": status,
         "http_status": http_status,
-        "request_start_perf_ns": start, "first_text_perf_ns": first,
-        "completion_perf_ns": done, "completion_received": done is not None,
+        "request_start_perf_ns": start,
+        "first_text_perf_ns": first,
+        "completion_perf_ns": done,
+        "completion_received": done is not None,
         "ttft_ms": ttft,
-        "ttft_unavailable_reason": None if ttft is not None else (problem or "no_generated_text"),
+        "ttft_unavailable_reason": (
+            None if ttft is not None else (problem or "no_generated_text")
+        ),
         "e2e_latency_ms": (done - start) / 1_000_000 if status == "success" else None,
         "e2e_unavailable_reason": None if status == "success" else status,
         "aiperf_request_latency_ms": native_metric(native, "request_latency", "ms"),
@@ -143,11 +151,15 @@ def request_metrics(raw, native):
         "input_tokens": native_metric(native, "usage_prompt_tokens", "tokens"),
         "output_tokens": native_metric(native, "usage_completion_tokens", "tokens"),
         "input_tokens_unavailable_reason": (
-            None if native_metric(native, "usage_prompt_tokens", "tokens") is not None
-            else "server_usage_not_reported"),
+            None
+            if native_metric(native, "usage_prompt_tokens", "tokens") is not None
+            else "server_usage_not_reported"
+        ),
         "output_tokens_unavailable_reason": (
-            None if native_metric(native, "usage_completion_tokens", "tokens") is not None
-            else "server_usage_not_reported"),
+            None
+            if native_metric(native, "usage_completion_tokens", "tokens") is not None
+            else "server_usage_not_reported"
+        ),
     }
     result.update(extract_backend(raw, status, input_tokens=result["input_tokens"]))
     return result
@@ -166,8 +178,11 @@ def derive_records(directory):
     seen, rows = set(), []
     raw_path = directory / "profile_export_raw.jsonl"
     # AIPerf can exit on all-failed runs before aggregating worker raw files.
-    raw_paths = ([raw_path] if raw_path.is_file() else
-                 sorted((directory / "raw_records").glob("raw_records_*.jsonl")))
+    raw_paths = (
+        [raw_path]
+        if raw_path.is_file()
+        else sorted((directory / "raw_records").glob("raw_records_*.jsonl"))
+    )
     # Stream large raw records; retain only the small derived records.
     for path in raw_paths:
         for raw in read_jsonl(path):
@@ -184,14 +199,24 @@ def derive_records(directory):
 
 def statistics(values, *, unit="ms"):
     values = sorted(values)
-    result = {"unit": unit, "count": len(values), "avg": None,
-              "min": None, "max": None, "p50": None, "p95": None, "p99": None}
+    result = {
+        "unit": unit,
+        "count": len(values),
+        "avg": None,
+        "min": None,
+        "max": None,
+        "p50": None,
+        "p95": None,
+        "p99": None,
+    }
     if values:
         result.update(avg=sum(values) / len(values), min=values[0], max=values[-1])
         for percentile in (50, 95, 99):
             index = (len(values) - 1) * percentile / 100
             low, high = math.floor(index), math.ceil(index)
-            result[f"p{percentile}"] = values[low] + (values[high] - values[low]) * (index - low)
+            result[f"p{percentile}"] = values[low] + (values[high] - values[low]) * (
+                index - low
+            )
     return result
 
 
@@ -228,12 +253,16 @@ def summarize(rows):
                 first_text.append(row["ttft_ms"])
     backend, verification = summarize_backend(rows, statistics)
     return {
-        "schema_version": 1, "clock": "AIPerf transport perf_counter_ns",
+        "schema_version": 1,
+        "clock": "AIPerf transport perf_counter_ns",
         "completion_boundary": "first SSE data: [DONE]",
         "percentile_method": "linear interpolation at (n - 1) * p",
-        "outcomes": counts, "measured_status_counts": dict(statuses),
-        "e2e_latency": statistics(values), "text_ttft": statistics(first_text),
-        "backend_metrics": backend, "cache_verification": verification,
+        "outcomes": counts,
+        "measured_status_counts": dict(statuses),
+        "e2e_latency": statistics(values),
+        "text_ttft": statistics(first_text),
+        "backend_metrics": backend,
+        "cache_verification": verification,
     }
 
 
@@ -242,8 +271,10 @@ def export_request_metrics(directory, *, memory=None):
     for row in rows:
         row.update(memory.request_fields(row) if memory is not None else uncollected_fields())
     summary = summarize(rows)
-    paths = [directory / name for name in
-             ("request_metrics.jsonl", "request_metrics.csv", "latency_summary.json")]
+    paths = [
+        directory / name
+        for name in ("request_metrics.jsonl", "request_metrics.csv", "latency_summary.json")
+    ]
     if any(path.exists() for path in paths):
         raise FileExistsError("Refusing to overwrite completion-metric exports")
     with paths[0].open("x", encoding="utf-8") as stream:

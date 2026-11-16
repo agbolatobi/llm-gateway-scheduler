@@ -15,11 +15,13 @@ import (
 	"strings"
 
 	"llm-gateway-scheduler/gateway/internal/quota"
+	"llm-gateway-scheduler/gateway/internal/scheduler"
 )
 
 type Gateway struct {
-	Listen            string `json:"listen"`
-	MaxActiveRequests *int   `json:"max_active_requests,omitempty"`
+	Scheduler         *scheduler.Config `json:"scheduler,omitempty"`
+	Listen            string            `json:"listen"`
+	MaxActiveRequests *int              `json:"max_active_requests,omitempty"`
 }
 type Quotas struct {
 	RequestWindowSeconds int64        `json:"request_window_seconds"`
@@ -60,95 +62,105 @@ type Config struct {
 
 var safeID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
-func (c Config) GlobalActiveLimit() int {
-	if c.Gateway.MaxActiveRequests == nil {
+func (config Config) SchedulerConfig() scheduler.Config {
+	if config.Gateway.Scheduler == nil {
+		return scheduler.Default()
+	}
+	return *config.Gateway.Scheduler
+}
+
+func (config Config) GlobalActiveLimit() int {
+	if config.Gateway.MaxActiveRequests == nil {
 		return 1
 	}
-	return *c.Gateway.MaxActiveRequests
+	return *config.Gateway.MaxActiveRequests
 }
 
 func Default() Config {
-	q := quota.DefaultConfig()
+	quotaConfig := quota.DefaultConfig()
 	return Config{Version: 1, Gateway: Gateway{Listen: "127.0.0.1:8000"},
-		Quotas: Quotas{q.RequestWindowSeconds, q.TokenWindowSeconds, q.User, q.GlobalCeiling},
+		Quotas: Quotas{quotaConfig.RequestWindowSeconds, quotaConfig.TokenWindowSeconds, quotaConfig.User, quotaConfig.GlobalCeiling},
 		Models: []Model{{ID: "local-llm", Aliases: []string{"default"}, ContextLimit: 4096,
-			DefaultOutputTokens: 128, MaxOutputTokens: 1024, Limits: q.Models[0].Limits,
+			DefaultOutputTokens: 128, MaxOutputTokens: 1024, Limits: quotaConfig.Models[0].Limits,
 			Backend: Backend{RuntimeID: "local-llm-runtime", Engine: "llama.cpp", BaseURL: "http://127.0.0.1:8080", ExpectedModel: "local-llm"}}}}
 }
 
-func (c Config) QuotaConfig() quota.Config {
-	q := quota.Config{RequestWindowSeconds: c.Quotas.RequestWindowSeconds, TokenWindowSeconds: c.Quotas.TokenWindowSeconds, User: c.Quotas.User, GlobalCeiling: c.Quotas.GlobalCeiling}
-	for _, m := range c.Models {
-		q.Models = append(q.Models, quota.Model{ID: m.ID, Aliases: m.Aliases, Limits: m.Limits})
+func (config Config) QuotaConfig() quota.Config {
+	quotaConfig := quota.Config{RequestWindowSeconds: config.Quotas.RequestWindowSeconds, TokenWindowSeconds: config.Quotas.TokenWindowSeconds, User: config.Quotas.User, GlobalCeiling: config.Quotas.GlobalCeiling}
+	for _, model := range config.Models {
+		quotaConfig.Models = append(quotaConfig.Models, quota.Model{ID: model.ID, Aliases: model.Aliases, Limits: model.Limits})
 	}
-	return q
+	return quotaConfig
 }
 
 // LocalURL accepts only explicit IPv4 loopback HTTP endpoints. No DNS discovery,
 // proxy routing, credentials, arbitrary paths or redirect destinations are allowed.
 func LocalURL(raw string) (string, error) {
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "http" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawPath != "" || (u.Path != "" && u.Path != "/") || (u.Hostname() != "127.0.0.1" && u.Hostname() != "localhost") {
+	parsedURL, err := url.Parse(raw)
+	if err != nil || parsedURL.Scheme != "http" || parsedURL.User != nil || parsedURL.RawQuery != "" || parsedURL.ForceQuery || parsedURL.Fragment != "" || parsedURL.RawPath != "" || (parsedURL.Path != "" && parsedURL.Path != "/") || (parsedURL.Hostname() != "127.0.0.1" && parsedURL.Hostname() != "localhost") {
 		return "", fmt.Errorf("backend must be a loopback HTTP URL with an explicit port and no path or credentials")
 	}
-	port, err := strconv.Atoi(u.Port())
+	port, err := strconv.Atoi(parsedURL.Port())
 	if err != nil || port < 1 || port > 65535 {
 		return "", fmt.Errorf("backend port must be 1..65535")
 	}
 	return "http://127.0.0.1:" + strconv.Itoa(port), nil
 }
 
-func (c Config) Validate() error {
-	if c.GlobalActiveLimit() < 1 || c.GlobalActiveLimit() > 64 {
+func (config Config) Validate() error {
+	if err := config.SchedulerConfig().Validate(); err != nil {
+		return err
+	}
+	if config.GlobalActiveLimit() < 1 || config.GlobalActiveLimit() > 64 {
 		return fmt.Errorf("global max_active_requests must be 1..64")
 	}
-	if c.Version != 1 {
+	if config.Version != 1 {
 		return fmt.Errorf("configuration version must be 1")
 	}
-	host, port, err := net.SplitHostPort(c.Gateway.Listen)
+	host, port, err := net.SplitHostPort(config.Gateway.Listen)
 	if err != nil || (host != "127.0.0.1" && host != "localhost") {
 		return fmt.Errorf("gateway listen must use IPv4 loopback and an explicit port")
 	}
-	p, err := strconv.Atoi(port)
-	if err != nil || p < 1 || p > 65535 {
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
 		return fmt.Errorf("invalid gateway listen port")
 	}
-	if _, err := c.QuotaConfig().EffectiveGlobal(); err != nil {
+	if _, err := config.QuotaConfig().EffectiveGlobal(); err != nil {
 		return err
 	}
 	runtimes, addresses := map[string]bool{}, map[string]bool{}
-	for _, m := range c.Models {
-		if m.MaxActiveRequests != nil && *m.MaxActiveRequests != 1 {
+	for _, model := range config.Models {
+		if model.MaxActiveRequests != nil && *model.MaxActiveRequests != 1 {
 			return fmt.Errorf("initial per-runtime max_active_requests must be 1")
 		}
-		if !safeID.MatchString(m.ID) || !safeID.MatchString(m.Backend.RuntimeID) {
+		if !safeID.MatchString(model.ID) || !safeID.MatchString(model.Backend.RuntimeID) {
 			return fmt.Errorf("invalid model or runtime ID")
 		}
-		for _, a := range m.Aliases {
-			if !safeID.MatchString(a) {
+		for _, alias := range model.Aliases {
+			if !safeID.MatchString(alias) {
 				return fmt.Errorf("invalid model alias")
 			}
 		}
-		if m.ContextLimit < 2 || m.ContextLimit > 1<<24 || m.DefaultOutputTokens < 1 || m.MaxOutputTokens < m.DefaultOutputTokens || m.MaxOutputTokens >= m.ContextLimit {
-			return fmt.Errorf("invalid context/output limits for %s", m.ID)
+		if model.ContextLimit < 2 || model.ContextLimit > 1<<24 || model.DefaultOutputTokens < 1 || model.MaxOutputTokens < model.DefaultOutputTokens || model.MaxOutputTokens >= model.ContextLimit {
+			return fmt.Errorf("invalid context/output limits for %s", model.ID)
 		}
-		if m.Backend.Engine != "llama.cpp" || m.Backend.ExpectedModel == "" || strings.TrimSpace(m.Backend.ExpectedModel) != m.Backend.ExpectedModel {
-			return fmt.Errorf("invalid backend engine or model identity for %s", m.ID)
+		if model.Backend.Engine != "llama.cpp" || model.Backend.ExpectedModel == "" || strings.TrimSpace(model.Backend.ExpectedModel) != model.Backend.ExpectedModel {
+			return fmt.Errorf("invalid backend engine or model identity for %s", model.ID)
 		}
-		address, err := LocalURL(m.Backend.BaseURL)
+		address, err := LocalURL(model.Backend.BaseURL)
 		if err != nil {
 			return err
 		}
-		if address == "http://127.0.0.1:"+strconv.Itoa(p) {
+		if address == "http://127.0.0.1:"+strconv.Itoa(portNumber) {
 			return fmt.Errorf("backend conflicts with gateway listen port")
 		}
-		if runtimes[m.Backend.RuntimeID] || addresses[address] {
+		if runtimes[model.Backend.RuntimeID] || addresses[address] {
 			return fmt.Errorf("duplicate runtime or backend address; use aliases for the same model")
 		}
-		runtimes[m.Backend.RuntimeID], addresses[address] = true, true
-		if l := m.Launch; l != nil {
-			if strings.TrimSpace(l.Executable) == "" || strings.TrimSpace(l.ModelFile) == "" || strings.TrimSpace(l.Device) == "" || l.Parallel != 1 || l.Threads < 1 || l.Threads > 4096 {
-				return fmt.Errorf("invalid launch settings for %s (initial managed runtimes require parallel=1)", m.ID)
+		runtimes[model.Backend.RuntimeID], addresses[address] = true, true
+		if launchConfig := model.Launch; launchConfig != nil {
+			if strings.TrimSpace(launchConfig.Executable) == "" || strings.TrimSpace(launchConfig.ModelFile) == "" || strings.TrimSpace(launchConfig.Device) == "" || launchConfig.Parallel != 1 || launchConfig.Threads < 1 || launchConfig.Threads > 4096 {
+				return fmt.Errorf("invalid launch settings for %s (initial managed runtimes require parallel=1)", model.ID)
 			}
 		}
 	}
@@ -156,28 +168,41 @@ func (c Config) Validate() error {
 }
 
 // rejectDuplicates makes Go and Python reject ambiguous duplicate object keys.
-func rejectDuplicates(d *json.Decoder) error {
-	t, err := d.Token()
+func rejectDuplicates(decoder *json.Decoder) error {
+	token, err := decoder.Token()
 	if err != nil {
 		return err
 	}
-	if delim, ok := t.(json.Delim); ok {
+	if delim, ok := token.(json.Delim); ok {
 		switch delim {
 		case '{':
 			seen := map[string]bool{}
-			for d.More() {
-				k, err := d.Token()
+			for decoder.More() {
+				keyToken, err := decoder.Token()
 				if err != nil {
 					return err
 				}
-				s, ok := k.(string)
-				if !ok || seen[s] {
+				key, ok := keyToken.(string)
+				if !ok || seen[key] {
 					return fmt.Errorf("duplicate configuration field")
 				}
-				seen[s] = true
-				if s == "max_active_requests" {
+				seen[key] = true
+				if key == "scheduler" {
 					var raw json.RawMessage
-					if err := d.Decode(&raw); err != nil {
+					if err := decoder.Decode(&raw); err != nil {
+						return err
+					}
+					if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+						return fmt.Errorf("scheduler cannot be null")
+					}
+					if err := rejectDuplicates(json.NewDecoder(bytes.NewReader(raw))); err != nil {
+						return err
+					}
+					continue
+				}
+				if key == "max_active_requests" {
+					var raw json.RawMessage
+					if err := decoder.Decode(&raw); err != nil {
 						return err
 					}
 					if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
@@ -185,82 +210,82 @@ func rejectDuplicates(d *json.Decoder) error {
 					}
 					continue
 				}
-				if err := rejectDuplicates(d); err != nil {
+				if err := rejectDuplicates(decoder); err != nil {
 					return err
 				}
 			}
 		case '[':
-			for d.More() {
-				if err := rejectDuplicates(d); err != nil {
+			for decoder.More() {
+				if err := rejectDuplicates(decoder); err != nil {
 					return err
 				}
 			}
 		default:
 			return fmt.Errorf("invalid JSON delimiter")
 		}
-		_, err = d.Token()
+		_, err = decoder.Token()
 		return err
 	}
 	return nil
 }
 
 func Load(path string) (Config, error) {
-	f, err := os.Open(path)
+	configFile, err := os.Open(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("cannot open gateway config: %w", err)
 	}
-	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, (1<<20)+1))
+	defer configFile.Close()
+	data, err := io.ReadAll(io.LimitReader(configFile, (1<<20)+1))
 	if err != nil || len(data) > 1<<20 {
 		return Config{}, fmt.Errorf("cannot read gateway config or file exceeds 1 MiB")
 	}
 	if err := rejectDuplicates(json.NewDecoder(bytes.NewReader(data))); err != nil {
 		return Config{}, fmt.Errorf("invalid or duplicate configuration JSON")
 	}
-	d := json.NewDecoder(bytes.NewReader(data))
-	d.DisallowUnknownFields()
-	var c Config
-	if err := d.Decode(&c); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var config Config
+	if err := decoder.Decode(&config); err != nil {
 		return Config{}, fmt.Errorf("invalid configuration fields or types")
 	}
 	var extra any
-	if err := d.Decode(&extra); err != io.EOF {
+	if err := decoder.Decode(&extra); err != io.EOF {
 		return Config{}, fmt.Errorf("configuration must contain one JSON object")
 	}
-	if err := c.Validate(); err != nil {
+	if err := config.Validate(); err != nil {
 		return Config{}, err
 	}
 	root, err := filepath.Abs(filepath.Dir(path))
 	if err != nil {
 		return Config{}, err
 	}
-	for n := range c.Models {
-		if l := c.Models[n].Launch; l != nil {
-			if !filepath.IsAbs(l.Executable) {
-				l.Executable = filepath.Join(root, l.Executable)
+	for modelIndex := range config.Models {
+		if launchConfig := config.Models[modelIndex].Launch; launchConfig != nil {
+			if !filepath.IsAbs(launchConfig.Executable) {
+				launchConfig.Executable = filepath.Join(root, launchConfig.Executable)
 			}
-			if !filepath.IsAbs(l.ModelFile) {
-				l.ModelFile = filepath.Join(root, l.ModelFile)
+			if !filepath.IsAbs(launchConfig.ModelFile) {
+				launchConfig.ModelFile = filepath.Join(root, launchConfig.ModelFile)
 			}
-			if resolved, err := filepath.EvalSymlinks(l.Executable); err == nil {
-				l.Executable = resolved
+			if resolved, err := filepath.EvalSymlinks(launchConfig.Executable); err == nil {
+				launchConfig.Executable = resolved
 			}
-			if resolved, err := filepath.EvalSymlinks(l.ModelFile); err == nil {
-				l.ModelFile = resolved
+			if resolved, err := filepath.EvalSymlinks(launchConfig.ModelFile); err == nil {
+				launchConfig.ModelFile = resolved
 			}
 		}
 	}
-	return c, nil
+	return config, nil
 }
 
-func (c Config) Lookup(name string) (Model, bool) {
-	for _, m := range c.Models {
-		if name == m.ID {
-			return m, true
+func (config Config) Lookup(name string) (Model, bool) {
+	for _, model := range config.Models {
+		if name == model.ID {
+			return model, true
 		}
-		for _, a := range m.Aliases {
-			if name == a {
-				return m, true
+		for _, alias := range model.Aliases {
+			if name == alias {
+				return model, true
 			}
 		}
 	}

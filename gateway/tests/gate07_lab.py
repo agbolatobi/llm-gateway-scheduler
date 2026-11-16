@@ -1,4 +1,5 @@
 """Reusable gateway test scenarios and fixtures. Entry point starts postman_lab."""
+
 import contextlib
 import fcntl
 import json
@@ -62,19 +63,44 @@ def lab_keys(binary, keys_dir, base):
     def reusable():
         credentials_path = keys_dir / "credentials.json"
         records_path = keys_dir / "api-keys.json"
-        credentials = json.loads(credentials_path.read_text()) if credentials_path.exists() else {"keys": {}}
-        records = json.loads(records_path.read_text()) if records_path.exists() else {"keys": []}
-        active = {r["id"]: r["user_id"] for r in records["keys"] if not r["revoked"]}
-        return {entry["user_id"]: entry["api_key"] for key_id, entry in credentials["keys"].items()
-                if active.get(key_id) == entry["user_id"] and entry["user_id"] in USERS}
+        credentials = (
+            json.loads(credentials_path.read_text())
+            if credentials_path.exists()
+            else {"keys": {}}
+        )
+        records = (
+            json.loads(records_path.read_text()) if records_path.exists() else {"keys": []}
+        )
+        active = {
+            key_record["id"]: key_record["user_id"]
+            for key_record in records["keys"]
+            if not key_record["revoked"]
+        }
+        return {
+            entry["user_id"]: entry["api_key"]
+            for key_id, entry in credentials["keys"].items()
+            if active.get(key_id) == entry["user_id"] and entry["user_id"] in USERS
+        }
 
     keys = reusable()
     for user in USERS:
         if user not in keys:
-            subprocess.run([str(binary), "keys", "create", "--user", user, "--config-dir", str(keys_dir), "--base-url", base], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(
+                [
+                    str(binary),
+                    "keys",
+                    "create",
+                    "--user",
+                    user,
+                    "--config-dir",
+                    str(keys_dir),
+                    "--base-url",
+                    base,
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+            )
     return {user + "_key": token for user, token in reusable().items()}
-
-
 
 
 class State:
@@ -114,13 +140,18 @@ def handler_for(state):
 
         def do_GET(self):
             if self.path == "/__test/state":
-                self.send_json(state.snapshot() if self.controls_allowed() else {}, 200 if self.controls_allowed() else 401)
+                self.send_json(
+                    state.snapshot() if self.controls_allowed() else {},
+                    200 if self.controls_allowed() else 401,
+                )
             elif self.path == "/health":
                 self.send_json({"status": "ok"})
             elif self.path == "/v1/models":
                 self.send_json({"data": [{"id": "local-llm"}]})
             elif self.path == "/slots":
-                self.send_json([{"id": 0, "n_ctx": 4096, "is_processing": state.snapshot()["busy"] > 0}])
+                self.send_json(
+                    [{"id": 0, "n_ctx": 4096, "is_processing": state.snapshot()["busy"] > 0}]
+                )
             else:
                 self.send_json({}, 404)
 
@@ -183,18 +214,38 @@ def handler_for(state):
                     self.send_response(200)
                     self.send_header("Content-Type", "text/event-stream")
                     self.end_headers()
-                    event([{"index": 0, "delta": {"content": "Hello world"}, "finish_reason": None}])
+                    event(
+                        [
+                            {
+                                "index": 0,
+                                "delta": {"content": "Hello world"},
+                                "finish_reason": None,
+                            }
+                        ]
+                    )
                     while mode in {"hold", "stubborn", "stall"} and not state.release.wait(0.1):
                         if mode != "stall":
                             self.wfile.write(b": heartbeat\n\n")
                             self.wfile.flush()
                     event([{"index": 0, "delta": {}, "finish_reason": "stop"}])
-                    if mode != "missing_usage" and body.get("stream_options", {}).get("include_usage"):
+                    if mode != "missing_usage" and body.get("stream_options", {}).get(
+                        "include_usage"
+                    ):
                         event([], True)
                     self.wfile.write(b"data: [DONE]\n\n")
                     self.wfile.flush()
                 else:
-                    value = dict(common, object="chat.completion", choices=[{"index": 0, "message": {"role": "assistant", "content": "Hello world"}, "finish_reason": "stop"}])
+                    value = dict(
+                        common,
+                        object="chat.completion",
+                        choices=[
+                            {
+                                "index": 0,
+                                "message": {"role": "assistant", "content": "Hello world"},
+                                "finish_reason": "stop",
+                            }
+                        ],
+                    )
                     if mode != "missing_usage":
                         value["usage"] = usage
                     self.send_json(value)
@@ -214,18 +265,30 @@ def run_checks(base, backend, values, logs, on_check_complete=lambda name: None)
     checks = Checks()
 
     def control(mode):
-        response = checks.request("set backend mode: " + mode, backend + "/__test/control",
-                                  headers={"Authorization": "Bearer " + values["control_key"]},
-                                  json={"mode": mode}, timeout=5)
+        response = checks.request(
+            "set backend mode: " + mode,
+            backend + "/__test/control",
+            headers={"Authorization": "Bearer " + values["control_key"]},
+            json={"mode": mode},
+            timeout=5,
+        )
         checks.status("set backend mode: " + mode, response, 200)
 
     def chat(user, cap=128, stream=False, model="local-llm"):
-        return checks.request("send chat request for " + user, base + "/v1/chat/completions",
-                              headers={"Authorization": "Bearer " + values[user + "_key"]},
-                              json={"model": model, "messages": [{"role": "user", "content": "hello"}],
-                                    "max_tokens": cap, "stream": stream,
-                                    **({"stream_options": {"include_usage": True}} if stream else {})},
-                              stream=stream, timeout=8)
+        return checks.request(
+            "send chat request for " + user,
+            base + "/v1/chat/completions",
+            headers={"Authorization": "Bearer " + values[user + "_key"]},
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": "hello"}],
+                "max_tokens": cap,
+                "stream": stream,
+                **({"stream_options": {"include_usage": True}} if stream else {}),
+            },
+            stream=stream,
+            timeout=8,
+        )
 
     def rejection(response, code):
         checks.status("reject request while capacity is occupied", response, 503)
@@ -235,32 +298,36 @@ def run_checks(base, backend, values, logs, on_check_complete=lambda name: None)
     try:
         checks.name = "actual_usage_refunds_and_retained_charges"
         for _ in range(2):
-            r = chat("actual")
-            checks.status("complete request with available token budget", r, 200)
-            checks.settlement(r, logs, charged_tokens=5, usage_source="backend")
+            response = chat("actual")
+            checks.status("complete request with available token budget", response, 200)
+            checks.settlement(response, logs, charged_tokens=5, usage_source="backend")
         checks.status("reject request after token budget is exhausted", chat("actual"), 429)
         on_check_complete(checks.name)
 
         checks.name = "streaming_usage_and_completion"
-        r = chat("stream", stream=True)
-        checks.status("start streaming request", r, 200)
-        text = checks.text("read completed stream", r)
-        checks.equal("require stream completion marker", "data: [DONE]" in text, True, r)
-        checks.settlement(r, logs, charged_tokens=5)
+        response = chat("stream", stream=True)
+        checks.status("start streaming request", response, 200)
+        text = checks.text("read completed stream", response)
+        checks.equal("require stream completion marker", "data: [DONE]" in text, True, response)
+        checks.settlement(response, logs, charged_tokens=5)
         checks.status("reuse refunded token budget", chat("stream"), 200)
         checks.status("reject request after token budget is exhausted", chat("stream"), 429)
         on_check_complete(checks.name)
 
         checks.name = "missing_usage_conservative_charge"
         control("missing_usage")
-        r = chat("fallback")
-        checks.status("complete response without usage", r, 200)
-        checks.settlement(r, logs, charged_tokens=131, usage_source="fallback")
+        response = chat("fallback")
+        checks.status("complete response without usage", response, 200)
+        checks.settlement(response, logs, charged_tokens=131, usage_source="fallback")
         checks.status("reject request after conservative charge", chat("fallback"), 429)
         on_check_complete(checks.name)
 
         for mode, user in (("hold", "busy"), ("stubborn", "cancel")):
-            checks.name = "runtime_and_global_capacity" if mode == "hold" else "cancellation_quarantine_and_recovery"
+            checks.name = (
+                "runtime_and_global_capacity"
+                if mode == "hold"
+                else "cancellation_quarantine_and_recovery"
+            )
             control(mode)
             held = chat(user, cap=32, stream=True)
             checks.status("start held streaming request", held, 200)
@@ -274,7 +341,12 @@ def run_checks(base, backend, values, logs, on_check_complete=lambda name: None)
             held.close()
             record = checks.settlement(held, logs, charged_tokens=35, usage_source="fallback")
             if mode == "stubborn":
-                checks.equal("keep cancelled runtime quarantined", record.get("capacity_state"), "quarantined_pending_idle", held)
+                checks.equal(
+                    "keep cancelled runtime quarantined",
+                    record.get("capacity_state"),
+                    "quarantined_pending_idle",
+                    held,
+                )
                 rejection(chat(user, cap=32), "capacity_unconfirmed")
             control("normal")
             time.sleep(0.15)
@@ -283,23 +355,28 @@ def run_checks(base, backend, values, logs, on_check_complete=lambda name: None)
 
         checks.name = "timeout_without_false_completion_and_recovery"
         control("stall")
-        r = chat("timeout", cap=32, stream=True)
-        checks.status("start request that will time out", r, 200)
-        text = checks.text("read timed-out stream", r)
-        checks.equal("report backend idle timeout", "backend_idle_timeout" in text, True, r)
-        checks.equal("omit success marker after timeout", "[DONE]" in text, False, r)
-        checks.settlement(r, logs, capacity_state="quarantined_pending_idle")
+        response = chat("timeout", cap=32, stream=True)
+        checks.status("start request that will time out", response, 200)
+        text = checks.text("read timed-out stream", response)
+        checks.equal(
+            "report backend idle timeout", "backend_idle_timeout" in text, True, response
+        )
+        checks.equal("omit success marker after timeout", "[DONE]" in text, False, response)
+        checks.settlement(response, logs, capacity_state="quarantined_pending_idle")
         control("normal")
         time.sleep(0.15)
         checks.status("accept request after timeout recovery", chat("timeout", cap=32), 200)
         on_check_complete(checks.name)
-        print("PASS: actual/stream usage, fallback, global/runtime busy refunds, cancellation, quarantine, timeout, recovery")
+        print(
+            "PASS: actual/stream usage, fallback, global/runtime busy refunds, cancellation, quarantine, timeout, recovery"
+        )
     finally:
         checks.close()
 
 
 def main():
     from postman_lab import main as run_server
+
     run_server()
 
 

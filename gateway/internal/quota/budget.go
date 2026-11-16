@@ -15,88 +15,88 @@ type Reservation struct {
 // ReserveTokens atomically reserves user/global tokens, with no request charge.
 // Kept for ledger tests and callers without a model. Gateway admission must use
 // ReserveForModel so all three budgets participate in the same transaction.
-func (m *Manager) ReserveTokens(userID string, amount int64) (*Reservation, Decision) {
-	return m.reserve(userID, "", amount)
+func (quotaManager *Manager) ReserveTokens(userID string, amount int64) (*Reservation, Decision) {
+	return quotaManager.reserve(userID, "", amount)
 }
 
 // ReserveForModel charges a canonical model request and reserves all three
 // token accounts in the same critical section. Aliases must be resolved first.
-func (m *Manager) ReserveForModel(userID, modelID string, amount int64) (*Reservation, Decision) {
+func (quotaManager *Manager) ReserveForModel(userID, modelID string, amount int64) (*Reservation, Decision) {
 	if modelID == "" {
 		return nil, Decision{Code: "model_not_found"}
 	}
-	return m.reserve(userID, modelID, amount)
+	return quotaManager.reserve(userID, modelID, amount)
 }
 
-func (m *Manager) reserve(userID, modelID string, amount int64) (*Reservation, Decision) {
+func (quotaManager *Manager) reserve(userID, modelID string, amount int64) (*Reservation, Decision) {
 	if userID == "" || amount <= 0 {
 		return nil, Decision{Code: "invalid_reservation"}
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	now := m.now()
-	m.refresh(now)
+	quotaManager.mu.Lock()
+	defer quotaManager.mu.Unlock()
+	now := quotaManager.now()
+	quotaManager.refresh(now)
 	deny := func(code string) (*Reservation, Decision) {
-		return nil, Decision{Code: code, RetryAfter: m.tokenStart.Add(m.tokenWindow).Sub(now)}
+		return nil, Decision{Code: code, RetryAfter: quotaManager.tokenStart.Add(quotaManager.tokenWindow).Sub(now)}
 	}
 	if modelID != "" {
-		limits, ok := m.modelLimits[modelID]
+		limits, ok := quotaManager.modelLimits[modelID]
 		if !ok {
 			return nil, Decision{Code: "model_not_found"}
 		}
-		if m.modelRequests[modelID] >= limits.Requests {
-			return nil, Decision{Code: "model_request_limit", RetryAfter: m.requestStart.Add(m.requestWindow).Sub(now)}
+		if quotaManager.modelRequests[modelID] >= limits.Requests {
+			return nil, Decision{Code: "model_request_limit", RetryAfter: quotaManager.requestStart.Add(quotaManager.requestWindow).Sub(now)}
 		}
-		if available(m.modelBudgets[modelID], limits.Tokens) < amount {
+		if available(quotaManager.modelBudgets[modelID], limits.Tokens) < amount {
 			return deny("model_token_limit")
 		}
 	}
-	if available(m.budgets[userID], m.userLimit.Tokens) < amount {
+	if available(quotaManager.budgets[userID], quotaManager.userLimit.Tokens) < amount {
 		return deny("user_token_limit")
 	}
-	if available(m.globalBudget, m.globalLimit.Tokens) < amount {
+	if available(quotaManager.globalBudget, quotaManager.globalLimit.Tokens) < amount {
 		return deny("global_token_limit")
 	}
-	u := m.budgets[userID]
-	if u == nil {
-		u = &budget{}
-		m.budgets[userID] = u
+	userBudget := quotaManager.budgets[userID]
+	if userBudget == nil {
+		userBudget = &budget{}
+		quotaManager.budgets[userID] = userBudget
 	}
-	u.reserved += amount
-	m.globalBudget.reserved += amount
-	r := &Reservation{owner: m, user: u, global: m.globalBudget, amount: amount}
+	userBudget.reserved += amount
+	quotaManager.globalBudget.reserved += amount
+	reservation := &Reservation{owner: quotaManager, user: userBudget, global: quotaManager.globalBudget, amount: amount}
 	if modelID != "" {
-		b := m.modelBudgets[modelID]
-		if b == nil {
-			b = &budget{}
-			m.modelBudgets[modelID] = b
+		modelBudget := quotaManager.modelBudgets[modelID]
+		if modelBudget == nil {
+			modelBudget = &budget{}
+			quotaManager.modelBudgets[modelID] = modelBudget
 		}
-		b.reserved += amount
-		m.modelRequests[modelID]++
-		r.model = b
+		modelBudget.reserved += amount
+		quotaManager.modelRequests[modelID]++
+		reservation.model = modelBudget
 	}
-	return r, Decision{Allowed: true}
+	return reservation, Decision{Allowed: true}
 }
 
 // SettleTokens releases a hold and charges actual input+output usage once.
 // actual=0 releases unused work; unknown usage can conservatively charge the hold.
-func (m *Manager) SettleTokens(r *Reservation, actual int64) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if r == nil || r.owner != m || actual < 0 || actual > r.amount {
+func (quotaManager *Manager) SettleTokens(reservation *Reservation, actual int64) error {
+	quotaManager.mu.Lock()
+	defer quotaManager.mu.Unlock()
+	if reservation == nil || reservation.owner != quotaManager || actual < 0 || actual > reservation.amount {
 		return fmt.Errorf("invalid token settlement")
 	}
-	if r.settled {
+	if reservation.settled {
 		return fmt.Errorf("reservation already settled")
 	}
-	r.user.reserved -= r.amount
-	r.global.reserved -= r.amount
-	r.user.spent += actual
-	r.global.spent += actual
-	if r.model != nil {
-		r.model.reserved -= r.amount
-		r.model.spent += actual
+	reservation.user.reserved -= reservation.amount
+	reservation.global.reserved -= reservation.amount
+	reservation.user.spent += actual
+	reservation.global.spent += actual
+	if reservation.model != nil {
+		reservation.model.reserved -= reservation.amount
+		reservation.model.spent += actual
 	}
-	r.settled = true
+	reservation.settled = true
 	return nil
 }

@@ -195,7 +195,7 @@ class CompletionExportTests(unittest.TestCase):
 
     def test_join_uses_request_id_despite_different_order_and_same_conversation(self):
         rows = latency.derive_records(self.root)
-        self.assertEqual({r["request_id"]: r["e2e_latency_ms"] for r in rows},
+        self.assertEqual({record["request_id"]: record["e2e_latency_ms"] for record in rows},
                          {"one": 500, "two": 1000})
 
     def test_orphan_records_are_retained_as_errors(self):
@@ -228,7 +228,7 @@ class CompletionExportTests(unittest.TestCase):
         self.assertTrue(all(row["e2e_latency_ms"] is None for row in rows))
 
     def test_exports_are_compact_preserve_sources_and_refuse_overwrite(self):
-        sources = {p: p.read_bytes() for p in self.root.glob("profile*.jsonl")}
+        sources = {process: process.read_bytes() for process in self.root.glob("profile*.jsonl")}
         self.raw1["payload"] = {"messages": [{"content": "PRIVATE PROMPT"}]}
         write_jsonl(self.root / "profile_export_raw.jsonl", [self.raw2, self.raw1])
         sources[self.root / "profile_export_raw.jsonl"] = (self.root / "profile_export_raw.jsonl").read_bytes()

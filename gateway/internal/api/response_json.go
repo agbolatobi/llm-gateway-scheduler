@@ -13,38 +13,38 @@ type tailWriter struct {
 	tail   []byte
 }
 
-func (w *tailWriter) Write(p []byte) (int, error) {
+func (writer *tailWriter) Write(buffer []byte) (int, error) {
 	const keep = 8192
-	n := len(p)
-	if len(p) >= keep {
-		if _, err := w.output.Write(w.tail); err != nil {
+	bytesAccepted := len(buffer)
+	if len(buffer) >= keep {
+		if _, err := writer.output.Write(writer.tail); err != nil {
 			return 0, err
 		}
-		if _, err := w.output.Write(p[:len(p)-keep]); err != nil {
+		if _, err := writer.output.Write(buffer[:len(buffer)-keep]); err != nil {
 			return 0, err
 		}
-		w.tail = append(w.tail[:0], p[len(p)-keep:]...)
+		writer.tail = append(writer.tail[:0], buffer[len(buffer)-keep:]...)
 	} else {
-		overflow := max(0, len(w.tail)+len(p)-keep)
+		overflow := max(0, len(writer.tail)+len(buffer)-keep)
 		if overflow > 0 {
-			if _, err := w.output.Write(w.tail[:overflow]); err != nil {
+			if _, err := writer.output.Write(writer.tail[:overflow]); err != nil {
 				return 0, err
 			}
-			copy(w.tail, w.tail[overflow:])
-			w.tail = w.tail[:len(w.tail)-overflow]
+			copy(writer.tail, writer.tail[overflow:])
+			writer.tail = writer.tail[:len(writer.tail)-overflow]
 		}
-		w.tail = append(w.tail, p...)
+		writer.tail = append(writer.tail, buffer...)
 	}
-	return n, nil
+	return bytesAccepted, nil
 }
 
 // walkJSON validates one document without assembling the entire response. The
 // largest single string token is still bounded by the response/event byte cap.
-func walkJSON(d *json.Decoder, path []string, depth int, observe func([]string, any) error) error {
+func walkJSON(decoder *json.Decoder, path []string, depth int, observe func([]string, any) error) error {
 	if depth > 32 {
 		return errLimit
 	}
-	token, err := d.Token()
+	token, err := decoder.Token()
 	if err != nil {
 		return err
 	}
@@ -58,8 +58,8 @@ func walkJSON(d *json.Decoder, path []string, depth int, observe func([]string, 
 	switch delim {
 	case '{':
 		seen := map[string]bool{}
-		for d.More() {
-			key, err := d.Token()
+		for decoder.More() {
+			key, err := decoder.Token()
 			if err != nil {
 				return err
 			}
@@ -71,23 +71,23 @@ func walkJSON(d *json.Decoder, path []string, depth int, observe func([]string, 
 			if len(seen) > 256 {
 				return errLimit
 			}
-			if err := walkJSON(d, append(path[:len(path):len(path)], name), depth+1, observe); err != nil {
+			if err := walkJSON(decoder, append(path[:len(path):len(path)], name), depth+1, observe); err != nil {
 				return err
 			}
 		}
 	case '[':
-		for i := 0; d.More(); i++ {
-			if i >= 4096 {
+		for elementIndex := 0; decoder.More(); elementIndex++ {
+			if elementIndex >= 4096 {
 				return errLimit
 			}
-			if err := walkJSON(d, append(path[:len(path):len(path)], strconv.Itoa(i)), depth+1, observe); err != nil {
+			if err := walkJSON(decoder, append(path[:len(path):len(path)], strconv.Itoa(elementIndex)), depth+1, observe); err != nil {
 				return err
 			}
 		}
 	default:
 		return errProtocol
 	}
-	end, err := d.Token()
+	end, err := decoder.Token()
 	if err != nil {
 		return err
 	}
@@ -97,8 +97,8 @@ func walkJSON(d *json.Decoder, path []string, depth int, observe func([]string, 
 	return nil
 }
 
-func jsonEOF(d *json.Decoder) error {
-	if _, err := d.Token(); err == io.EOF {
+func jsonEOF(decoder *json.Decoder) error {
+	if _, err := decoder.Token(); err == io.EOF {
 		return nil
 	} else if err != nil {
 		return err
@@ -110,11 +110,11 @@ func relayJSON(reader io.Reader, output *proxyOutput, trace *requestTrace, args 
 	facts := factsArg(args)
 	var usage usageCollector
 	tail := &tailWriter{output: output}
-	d := json.NewDecoder(io.TeeReader(reader, tail))
-	d.UseNumber()
+	decoder := json.NewDecoder(io.TeeReader(reader, tail))
+	decoder.UseNumber()
 	var id, object, model, role, finish string
 	var content, index, created, choice bool
-	err := walkJSON(d, nil, 0, func(path []string, value any) error {
+	err := walkJSON(decoder, nil, 0, func(path []string, value any) error {
 		usage.observe(path, value)
 		if len(path) == 0 {
 			if value != json.Delim('{') {
@@ -123,21 +123,21 @@ func relayJSON(reader io.Reader, output *proxyOutput, trace *requestTrace, args 
 			return nil
 		}
 		if len(path) == 1 {
-			s, _ := value.(string)
+			textValue, _ := value.(string)
 			switch path[0] {
 			case "error":
 				return errProtocol
 			case "id":
-				id = s
+				id = textValue
 			case "object":
-				object = s
+				object = textValue
 			case "model":
-				model = s
+				model = textValue
 			case "created":
-				n, ok := value.(json.Number)
+				number, ok := value.(json.Number)
 				if ok {
-					v, e := n.Int64()
-					created = e == nil && v >= 0
+					integerValue, parseError := number.Int64()
+					created = parseError == nil && integerValue >= 0
 				}
 			case "choices":
 				if value != json.Delim('[') {
@@ -161,8 +161,8 @@ func relayJSON(reader io.Reader, output *proxyOutput, trace *requestTrace, args 
 		if len(path) == 3 {
 			switch path[2] {
 			case "index":
-				n, ok := value.(json.Number)
-				index = ok && string(n) == "0"
+				number, ok := value.(json.Number)
+				index = ok && string(number) == "0"
 			case "finish_reason":
 				finish, _ = value.(string)
 			case "message":
@@ -176,10 +176,10 @@ func relayJSON(reader io.Reader, output *proxyOutput, trace *requestTrace, args 
 			case "role":
 				role, _ = value.(string)
 			case "content":
-				s, ok := value.(string)
+				textValue, ok := value.(string)
 				content = ok
-				if ok && s != "" {
-					trace.text()
+				if ok && textValue != "" {
+					trace.markFirstText()
 				}
 			case "tool_calls", "function_call":
 				return errProtocol
@@ -190,7 +190,7 @@ func relayJSON(reader io.Reader, output *proxyOutput, trace *requestTrace, args 
 	if err != nil {
 		return err
 	}
-	if err := jsonEOF(d); err != nil {
+	if err := jsonEOF(decoder); err != nil {
 		return err
 	}
 	if id == "" || object != "chat.completion" || model == "" || !created || !choice || !index || role != "assistant" || !content || finish == "" {

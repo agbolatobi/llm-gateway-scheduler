@@ -1,0 +1,10 @@
+{
+  "apiVersion": "v1",
+  "kind": "ServiceAccount",
+  "metadata": {
+    "name": "gateway",
+    "annotations": {
+      "iam.gke.io/gcp-service-account": "REPLACE_SERVICE_ACCOUNT"
+    }
+  }
+}

@@ -117,16 +117,18 @@ def write_prepared(workload, output):
         with (output / filename).open("x", encoding="utf-8") as stream:
             for record in records:
                 stream.write(json.dumps(record, ensure_ascii=False) + "\n")
-        manifest["cases"].append({
-            **case,
-            "input_file": filename,
-            "target_input_tokens": prompt.get("target_input_tokens"),
-            "request_count": len(records),
-            "requests": [
-                {"line": index, "repetition": index, "id": f"{case['id']}-r{index}"}
-                for index in range(1, len(records) + 1)
-            ],
-        })
+        manifest["cases"].append(
+            {
+                **case,
+                "input_file": filename,
+                "target_input_tokens": prompt.get("target_input_tokens"),
+                "request_count": len(records),
+                "requests": [
+                    {"line": index, "repetition": index, "id": f"{case['id']}-r{index}"}
+                    for index in range(1, len(records) + 1)
+                ],
+            }
+        )
     (output / "manifest.json").write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
@@ -134,10 +136,18 @@ def write_prepared(workload, output):
 
 
 def add_workload_arguments(parser):
-    parser.add_argument("--input", type=Path, default=DEFAULT_INPUT,
-                        help="Source JSON workload (default: project benchmark_prompts.json)")
-    parser.add_argument("--case", action="append", dest="case_ids",
-                        help="Select a case ID; repeat to select several")
+    parser.add_argument(
+        "--input",
+        type=Path,
+        default=DEFAULT_INPUT,
+        help="Source JSON workload (default: project benchmark_prompts.json)",
+    )
+    parser.add_argument(
+        "--case",
+        action="append",
+        dest="case_ids",
+        help="Select a case ID; repeat to select several",
+    )
     parser.add_argument("--repetitions", type=int, help="Override the workload repetitions")
     parser.add_argument("--concurrency", type=int, help="Override the workload concurrency")
 
@@ -145,11 +155,15 @@ def add_workload_arguments(parser):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     add_workload_arguments(parser)
-    parser.add_argument("--output", type=Path, help="New output directory; must not already exist")
+    parser.add_argument(
+        "--output", type=Path, help="New output directory; must not already exist"
+    )
     args = parser.parse_args(argv)
     try:
         workload = load_workload(
-            args.input, case_ids=args.case_ids, repetitions=args.repetitions,
+            args.input,
+            case_ids=args.case_ids,
+            repetitions=args.repetitions,
             concurrency=args.concurrency,
         )
         output = args.output or PROJECT_ROOT / "benchmarks/generated" / new_name()

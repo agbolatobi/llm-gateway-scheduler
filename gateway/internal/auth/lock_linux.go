@@ -10,11 +10,11 @@ import (
 )
 
 // Linux advisory locks are released even if an administration command crashes.
-func (s *Store) lock() (func(), error) {
-	if err := s.checkDir(); err != nil {
+func (keyStore *Store) lock() (func(), error) {
+	if err := keyStore.checkDir(); err != nil {
 		return nil, err
 	}
-	path := filepath.Join(s.Dir, ".keys.lock")
+	path := filepath.Join(keyStore.Dir, ".keys.lock")
 	if err := secureFile(path); err != nil {
 		return nil, err
 	}

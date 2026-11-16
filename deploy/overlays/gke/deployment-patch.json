@@ -1,0 +1,78 @@
+[
+  {
+    "op": "add",
+    "path": "/spec/template/spec/initContainers/1",
+    "value": {
+      "name": "download-model",
+      "image": "python:3.13.7-slim-bookworm@sha256:adafcc17694d715c905b4c7bebd96907a1fd5cf183395f0ebc4d3428bd22d92d",
+      "command": [
+        "python3",
+        "-B",
+        "/scripts/download-model.py"
+      ],
+      "env": [
+        {
+          "name": "MODEL_URI",
+          "value": "gs://REPLACE_BUCKET/model.gguf"
+        },
+        {
+          "name": "MODEL_SHA256",
+          "value": "REPLACE_MODEL_SHA256"
+        }
+      ],
+      "securityContext": {
+        "allowPrivilegeEscalation": false,
+        "readOnlyRootFilesystem": true,
+        "capabilities": {
+          "drop": [
+            "ALL"
+          ]
+        }
+      },
+      "resources": {
+        "requests": {
+          "cpu": "100m",
+          "memory": "64Mi"
+        },
+        "limits": {
+          "cpu": "500m",
+          "memory": "256Mi"
+        }
+      },
+      "volumeMounts": [
+        {
+          "name": "models",
+          "mountPath": "/models",
+          "readOnly": false
+        },
+        {
+          "name": "download-script",
+          "mountPath": "/scripts",
+          "readOnly": true
+        },
+        {
+          "name": "runtime-tmp",
+          "mountPath": "/tmp",
+          "readOnly": false
+        }
+      ]
+    }
+  },
+  {
+    "op": "add",
+    "path": "/spec/template/spec/volumes/-",
+    "value": {
+      "name": "download-script",
+      "configMap": {
+        "name": "model-downloader"
+      }
+    }
+  },
+  {
+    "op": "add",
+    "path": "/spec/template/spec/nodeSelector",
+    "value": {
+      "workload": "cpu"
+    }
+  }
+]

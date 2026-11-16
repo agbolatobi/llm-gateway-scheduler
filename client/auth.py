@@ -13,11 +13,17 @@ def _origin(value):
         return None
     try:
         url = urlsplit(value)
-        if (url.scheme != "http" or url.username is not None
-                or url.password is not None or url.path not in ("", "/")
-                or url.query or url.fragment
-                or url.hostname not in {"localhost", "127.0.0.1", "::1"}
-                or url.port is None or url.port == 0):
+        if (
+            url.scheme != "http"
+            or url.username is not None
+            or url.password is not None
+            or url.path not in ("", "/")
+            or url.query
+            or url.fragment
+            or url.hostname not in {"localhost", "127.0.0.1", "::1"}
+            or url.port is None
+            or url.port == 0
+        ):
             return None
         host = "127.0.0.1" if url.hostname == "localhost" else url.hostname
         return url.scheme, host, url.port
@@ -30,10 +36,12 @@ def saved_api_key(base_url):
     origin = _origin(base_url)
     if origin is None:
         return None
-    path = Path(os.environ.get(
-        "LLM_GATEWAY_CREDENTIALS",
-        str(Path.home() / ".config" / "llm-gateway-scheduler" / "credentials.json"),
-    ))
+    path = Path(
+        os.environ.get(
+            "LLM_GATEWAY_CREDENTIALS",
+            str(Path.home() / ".config" / "llm-gateway-scheduler" / "credentials.json"),
+        )
+    )
     try:
         parent = path.parent.lstat()
         if not stat.S_ISDIR(parent.st_mode) or parent.st_mode & 0o077:
@@ -43,8 +51,11 @@ def saved_api_key(base_url):
         return None
     with os.fdopen(fd, "r", encoding="utf-8") as source:
         info = os.fstat(source.fileno())
-        if (not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077
-                or (hasattr(os, "getuid") and info.st_uid != os.getuid())):
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_mode & 0o077
+            or (hasattr(os, "getuid") and info.st_uid != os.getuid())
+        ):
             raise ValueError("Gateway credentials must be an owner-only regular file (0600).")
         raw = source.read((1 << 20) + 1)
     if len(raw) > 1 << 20:
@@ -65,7 +76,9 @@ def saved_api_key(base_url):
         if _origin(key.get("base_url")) != origin:
             return None
         token = key["api_key"]
-        if not isinstance(token, str) or not re.fullmatch(r"lgw_[0-9a-f]{16}_[A-Za-z0-9_-]{43}", token):
+        if not isinstance(token, str) or not re.fullmatch(
+            r"lgw_[0-9a-f]{16}_[A-Za-z0-9_-]{43}", token
+        ):
             raise ValueError
         return token
     except (ValueError, KeyError, TypeError):

@@ -50,7 +50,8 @@ def _matches(pid, port):
 
 def _find_server(port):
     matches = [
-        int(entry.name) for entry in Path("/proc").iterdir()
+        int(entry.name)
+        for entry in Path("/proc").iterdir()
         if entry.name.isdecimal() and _matches(int(entry.name), port)
     ]
     if len(matches) > 1:
@@ -126,7 +127,9 @@ def main():
     parser.add_argument("--port", type=int, default=8080, help="Server port (default: 8080)")
     parser.add_argument("--dry-run", action="store_true", help="Preview without changing anything")
     parser.add_argument(
-        "--timeout", type=float, default=10,
+        "--timeout",
+        type=float,
+        default=10,
         help="Seconds allowed for locking and, separately, graceful exit (default: 10)",
     )
     args = parser.parse_args()

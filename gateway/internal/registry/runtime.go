@@ -24,10 +24,10 @@ func NewInspector() *Inspector {
 
 type RuntimeError struct{ Code string }
 
-func (e *RuntimeError) Error() string { return e.Code }
-func runtimeError(code string) error  { return &RuntimeError{Code: code} }
+func (runtimeError *RuntimeError) Error() string { return runtimeError.Code }
+func runtimeError(code string) error             { return &RuntimeError{Code: code} }
 
-func (i *Inspector) query(ctx context.Context, base, path string, body any, result any) error {
+func (inspector *Inspector) query(ctx context.Context, base, path string, body any, result any) error {
 	method := http.MethodGet
 	var payload []byte
 	if body != nil {
@@ -38,14 +38,14 @@ func (i *Inspector) query(ctx context.Context, base, path string, body any, resu
 			return err
 		}
 	}
-	r, err := http.NewRequestWithContext(ctx, method, base+path, bytes.NewReader(payload))
+	request, err := http.NewRequestWithContext(ctx, method, base+path, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
 	if body != nil {
-		r.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Content-Type", "application/json")
 	}
-	response, err := i.client.Do(r)
+	response, err := inspector.client.Do(request)
 	if err != nil {
 		return runtimeError("model_unavailable")
 	}
@@ -65,17 +65,17 @@ func (i *Inspector) query(ctx context.Context, base, path string, body any, resu
 
 // CountInput bounds the entire validation exchange. Slot limits are per request,
 // not the server's total allocated context. Template/tokenizer failures fail closed.
-func (i *Inspector) CountInput(ctx context.Context, m Model, messages any) (int, error) {
+func (inspector *Inspector) CountInput(ctx context.Context, model Model, messages any) (int, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	base, err := LocalURL(m.Backend.BaseURL)
+	base, err := LocalURL(model.Backend.BaseURL)
 	if err != nil {
 		return 0, err
 	}
 	var health struct {
 		Status string `json:"status"`
 	}
-	if err := i.query(ctx, base, "/health", nil, &health); err != nil {
+	if err := inspector.query(ctx, base, "/health", nil, &health); err != nil {
 		return 0, err
 	}
 	if health.Status != "ok" {
@@ -86,41 +86,41 @@ func (i *Inspector) CountInput(ctx context.Context, m Model, messages any) (int,
 			ID string `json:"id"`
 		} `json:"data"`
 	}
-	if err := i.query(ctx, base, "/v1/models", nil, &models); err != nil {
+	if err := inspector.query(ctx, base, "/v1/models", nil, &models); err != nil {
 		return 0, err
 	}
-	if len(models.Data) != 1 || models.Data[0].ID != m.Backend.ExpectedModel {
+	if len(models.Data) != 1 || models.Data[0].ID != model.Backend.ExpectedModel {
 		return 0, runtimeError("model_identity_mismatch")
 	}
-	if m.Launch != nil {
+	if model.Launch != nil {
 		var props struct {
 			ModelPath string `json:"model_path"`
 		}
-		if err := i.query(ctx, base, "/props", nil, &props); err != nil {
+		if err := inspector.query(ctx, base, "/props", nil, &props); err != nil {
 			return 0, err
 		}
-		if !filepath.IsAbs(props.ModelPath) || filepath.Clean(props.ModelPath) != filepath.Clean(m.Launch.ModelFile) {
+		if !filepath.IsAbs(props.ModelPath) || filepath.Clean(props.ModelPath) != filepath.Clean(model.Launch.ModelFile) {
 			return 0, runtimeError("model_identity_mismatch")
 		}
 	}
 	var slots []struct {
 		Context int `json:"n_ctx"`
 	}
-	if err := i.query(ctx, base, "/slots", nil, &slots); err != nil {
+	if err := inspector.query(ctx, base, "/slots", nil, &slots); err != nil {
 		return 0, err
 	}
 	if len(slots) == 0 {
 		return 0, runtimeError("model_context_mismatch")
 	}
 	for _, slot := range slots {
-		if slot.Context < m.ContextLimit {
+		if slot.Context < model.ContextLimit {
 			return 0, runtimeError("model_context_mismatch")
 		}
 	}
 	var formatted struct {
 		Prompt *string `json:"prompt"`
 	}
-	if err := i.query(ctx, base, "/apply-template", map[string]any{"messages": messages}, &formatted); err != nil {
+	if err := inspector.query(ctx, base, "/apply-template", map[string]any{"messages": messages}, &formatted); err != nil {
 		return 0, err
 	}
 	if formatted.Prompt == nil {
@@ -129,7 +129,7 @@ func (i *Inspector) CountInput(ctx context.Context, m Model, messages any) (int,
 	var tokenized struct {
 		Tokens []*int64 `json:"tokens"`
 	}
-	if err := i.query(ctx, base, "/tokenize", map[string]any{"content": *formatted.Prompt, "add_special": true, "parse_special": true}, &tokenized); err != nil {
+	if err := inspector.query(ctx, base, "/tokenize", map[string]any{"content": *formatted.Prompt, "add_special": true, "parse_special": true}, &tokenized); err != nil {
 		return 0, err
 	}
 	if len(tokenized.Tokens) == 0 {
@@ -143,22 +143,26 @@ func (i *Inspector) CountInput(ctx context.Context, m Model, messages any) (int,
 	return len(tokenized.Tokens), nil
 }
 
-func (c Config) Clone() Config {
-	copy := c
-	if c.Gateway.MaxActiveRequests != nil {
-		v := *c.Gateway.MaxActiveRequests
-		copy.Gateway.MaxActiveRequests = &v
+func (config Config) Clone() Config {
+	copy := config
+	if config.Gateway.Scheduler != nil {
+		schedulerSettings := *config.Gateway.Scheduler
+		copy.Gateway.Scheduler = &schedulerSettings
 	}
-	copy.Models = append([]Model(nil), c.Models...)
-	for n, m := range c.Models {
-		if m.MaxActiveRequests != nil {
-			v := *m.MaxActiveRequests
-			copy.Models[n].MaxActiveRequests = &v
+	if config.Gateway.MaxActiveRequests != nil {
+		globalActiveLimit := *config.Gateway.MaxActiveRequests
+		copy.Gateway.MaxActiveRequests = &globalActiveLimit
+	}
+	copy.Models = append([]Model(nil), config.Models...)
+	for modelIndex, model := range config.Models {
+		if model.MaxActiveRequests != nil {
+			runtimeActiveLimit := *model.MaxActiveRequests
+			copy.Models[modelIndex].MaxActiveRequests = &runtimeActiveLimit
 		}
-		copy.Models[n].Aliases = append([]string(nil), m.Aliases...)
-		if m.Launch != nil {
-			l := *m.Launch
-			copy.Models[n].Launch = &l
+		copy.Models[modelIndex].Aliases = append([]string(nil), model.Aliases...)
+		if model.Launch != nil {
+			launchConfig := *model.Launch
+			copy.Models[modelIndex].Launch = &launchConfig
 		}
 	}
 	return copy
@@ -166,20 +170,20 @@ func (c Config) Clone() Config {
 
 // CompatibleReload permits explicit registration/removal and policy changes,
 // but never silently reinterprets an existing runtime's identity/context.
-func (c Config) CompatibleReload(next Config) error {
+func (config Config) CompatibleReload(next Config) error {
 	if err := next.Validate(); err != nil {
 		return err
 	}
-	if c.Gateway.Listen != next.Gateway.Listen {
+	if config.Gateway.Listen != next.Gateway.Listen {
 		return fmt.Errorf("gateway listen changes require restart")
 	}
-	for _, old := range c.Models {
-		for _, m := range next.Models {
-			if old.ID == m.ID {
-				if old.Backend != m.Backend || old.ContextLimit != m.ContextLimit {
+	for _, old := range config.Models {
+		for _, model := range next.Models {
+			if old.ID == model.ID {
+				if old.Backend != model.Backend || old.ContextLimit != model.ContextLimit {
 					return fmt.Errorf("runtime or context changes require restart")
 				}
-				if (old.Launch == nil) != (m.Launch == nil) || (old.Launch != nil && *old.Launch != *m.Launch) {
+				if (old.Launch == nil) != (model.Launch == nil) || (old.Launch != nil && *old.Launch != *model.Launch) {
 					return fmt.Errorf("launch setting changes require restart")
 				}
 			}

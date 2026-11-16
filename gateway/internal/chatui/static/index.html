@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>Gateway · Chat</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="module" src="./app.mjs"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#prompt">Skip to message</a>
+    <div class="workspace">
+      <aside class="sidebar" aria-label="Connection settings">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">G</span
+          ><span
+            >Gateway<span class="brand-detail"
+              >Your models, one conversation.</span
+            ></span
+          >
+        </div>
+        <div class="connection-heading">
+          <h2>Connection</h2>
+          <span id="connection-state" class="badge">Disconnected</span>
+        </div>
+        <form id="connect-form">
+          <label for="api-key">API key</label>
+          <input
+            id="api-key"
+            type="password"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="Paste your full API token"
+            required
+          />
+          <button id="connect-button" class="primary" type="submit">
+            Connect to gateway
+          </button>
+        </form>
+        <p class="hint">Use the token printed when your API key was created.</p>
+        <div class="divider"></div>
+        <label for="model">Model</label>
+        <select id="model" disabled>
+          <option value="">Connect to load models</option>
+        </select>
+        <details>
+          <summary>Response settings</summary>
+          <label for="output-limit">Maximum output tokens</label>
+          <input
+            id="output-limit"
+            type="number"
+            min="1"
+            max="65536"
+            step="1"
+            value="1024"
+          />
+          <p class="hint">Your model's configured limit still applies.</p>
+        </details>
+        <div class="sidebar-foot">
+          <p>
+            Your key stays in this tab's session across refreshes. Disconnect
+            clears it. Conversation history clears on refresh.
+          </p>
+          <code id="gateway-origin"></code>
+        </div>
+      </aside>
+      <main class="conversation">
+        <header class="toolbar">
+          <div>
+            <span class="eyebrow">CHAT</span>
+            <h1 id="conversation-title">A place to think.</h1>
+          </div>
+          <div class="toolbar-actions">
+            <button id="new-chat" type="button" disabled>New chat</button
+            ><button id="disconnect" type="button" disabled>Disconnect</button>
+          </div>
+        </header>
+        <div
+          id="messages"
+          class="messages"
+          aria-label="Conversation"
+          aria-busy="false"
+        >
+          <section id="welcome" class="welcome">
+            <span class="welcome-symbol" aria-hidden="true">↗</span>
+            <h2>What are we<br />working on?</h2>
+            <p>
+              Connect with your API key, choose a model, and start a
+              conversation.
+            </p>
+            <div class="suggestions">
+              <button
+                type="button"
+                data-prompt="Explain how a request moves through an inference gateway."
+              >
+                Explain an inference gateway
+                <span aria-hidden="true">↗</span></button
+              ><button
+                type="button"
+                data-prompt="Help me compare FIFO scheduling with priority scheduling and aging."
+              >
+                Compare scheduling strategies <span aria-hidden="true">↗</span>
+              </button>
+            </div>
+          </section>
+        </div>
+        <div class="composer-area">
+          <p id="status" class="status" role="status" aria-live="polite">
+            Connect to begin.
+          </p>
+          <form id="chat-form" class="composer">
+            <label class="visually-hidden" for="prompt">Message</label>
+            <textarea
+              id="prompt"
+              rows="3"
+              maxlength="200000"
+              placeholder="Ask a question or explore an idea…"
+              disabled
+              required
+            ></textarea>
+            <div class="composer-bottom">
+              <span>Enter to send · Shift + Enter for a new line</span
+              ><button id="stop" type="button" hidden>Stop</button
+              ><button id="send" class="primary" type="submit" disabled>
+                Send <span aria-hidden="true">↑</span>
+              </button>
+            </div>
+          </form>
+          <p class="composer-note">
+            Responses stream as they arrive. Check important details.
+          </p>
+        </div>
+      </main>
+    </div>
+    <noscript
+      >This chat requires JavaScript. The gateway API is also available through
+      Postman or the Python CLI.</noscript
+    >
+  </body>
+</html>

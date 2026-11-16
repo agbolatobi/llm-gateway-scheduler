@@ -1,0 +1,7 @@
+**
+!gateway/
+!gateway/**
+!docker/
+!docker/**
+gateway/tests/
+**/*_test.go
