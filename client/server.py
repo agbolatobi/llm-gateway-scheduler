@@ -3,6 +3,7 @@
 import errno
 import fcntl
 import math
+import shlex
 from pathlib import Path
 import subprocess
 import time
@@ -192,10 +193,18 @@ def ensure_server_ready(
                         return log_path if process is not None else None
 
                     if state == "missing" and process is None:
+                        if not weights.is_file():
+                            guidance = f"See {PROJECT_ROOT / 'models/README.md'} for download instructions."
+                            if weights.resolve() == MODEL_FILE.resolve():
+                                guidance += (
+                                    " Download the default model by running: python3 "
+                                    + shlex.quote(str(PROJECT_ROOT / "models/download.py"))
+                                )
+                            else:
+                                guidance += " Download the configured model from its publisher to this path."
+                            raise RuntimeError(f"Model file not found: {weights}. {guidance}")
                         if not binary.is_file():
                             raise RuntimeError(f"Server executable not found: {binary}")
-                        if not weights.is_file():
-                            raise RuntimeError(f"Model file not found: {weights}")
                         command = [
                             str(binary),
                             "--model",

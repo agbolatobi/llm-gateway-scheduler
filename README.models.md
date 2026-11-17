@@ -16,7 +16,8 @@ stop signals only recorded, owned processes. List/validate make no network calls
 
 ## Add a model
 
-1. Obtain its GGUF or start an external llama.cpp server.
+1. Obtain its GGUF or start an external llama.cpp server. For the default weights,
+   run `python3 models/download.py`; see [download instructions](models/README.md).
 2. Register unique model/alias/runtime IDs and a backend port.
 3. Set expected identity, context/output limits and quotas.
 4. Add `launch` for CLI-managed models (`parallel: 1`); paths resolve from the

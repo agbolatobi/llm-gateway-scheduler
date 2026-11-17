@@ -14,7 +14,9 @@ python -m pip install -r requirements.txt
 ```
 
 All Python tools share `.venv`; activate it in later sessions. Install the runtime
-and GGUF at the paths in `gateway.config.json`; see [models](README.models.md).
+and GGUF at the paths in `gateway.config.json`. Download the default weights with
+`python3 models/download.py`; see [download instructions](models/README.md) and
+[model management](README.models.md).
 
 ## Start and chat
 

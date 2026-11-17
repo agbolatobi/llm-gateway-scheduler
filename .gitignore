@@ -2,6 +2,12 @@
 __pycache__/
 /.venv/
 
+# Keep model weights local, including other formats and nested downloads.
+*.gguf
+/models/*
+!/models/README.md
+!/models/download.py
+
 # Local project references (not for version control).
 /project-requirements.html
 /README.local.md

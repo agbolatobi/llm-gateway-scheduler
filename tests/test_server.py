@@ -95,8 +95,15 @@ class ServerStartupTests(unittest.TestCase):
     def test_missing_model_has_a_useful_error(self):
         with patch.object(server, "MODEL_FILE", self.root / "absent.gguf"):
             with patch.object(server, "_health", return_value="missing"):
-                with self.assertRaisesRegex(RuntimeError, "Model file not found"):
+                with self.assertRaisesRegex(RuntimeError, "Model file not found.*models/README.md.*python3 .*models/download.py"):
                     server.ensure_server_ready("http://127.0.0.1:8080")
+        self.launch.assert_not_called()
+
+    def test_missing_custom_model_points_to_publisher(self):
+        with patch.object(server, "_health", return_value="missing"):
+            with self.assertRaisesRegex(RuntimeError, "Download the configured model from its publisher") as caught:
+                server.ensure_server_ready("http://127.0.0.1:8080", model_file=self.root / "custom.gguf")
+        self.assertNotIn("download.py", str(caught.exception))
         self.launch.assert_not_called()
 
     def test_remote_urls_and_invalid_timeouts_are_rejected(self):
