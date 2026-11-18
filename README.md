@@ -4,6 +4,33 @@ llama.cpp inference, a Python CLI, a Go gateway with browser chat and request
 queues, and AIPerf benchmarks. Run commands from the project root in Ubuntu WSL
 with Python 3.12; the gateway also requires Go 1.22+.
 
+## Project overview
+
+This project runs a GGUF language model with llama.cpp and provides a shared
+gateway for controlled access. Users can chat through a browser, the Python CLI,
+or an OpenAI-compatible chat API. The Go gateway authenticates users, enforces
+request and token quotas, routes requests to registered models, and queues work
+when model capacity is busy. Responses can stream back as they are generated.
+
+The main components are:
+
+- **Inference:** llama.cpp loads locally downloaded model weights and runs generation.
+- **Gateway and scheduler:** API keys, model routing, bounded queues, concurrency
+  limits, and usage accounting protect shared inference capacity.
+- **Clients and model management:** browser chat and the Python CLI provide chat
+  access; CLI commands validate registrations and start or stop local models.
+- **Benchmarks:** AIPerf measures inference latency and throughput, with local
+  memory measurements and optional reports. The current runner targets llama.cpp directly.
+- **Cloud deployment:** Terraform and deployment scripts provision and manage a
+  GKE deployment containing the gateway and llama.cpp, with persistent model and key storage.
+
+For local use, direct CLI chat connects to llama.cpp on port **8080**. Browser
+and authenticated API traffic use the gateway on port **8000**. The default
+configuration registers one model, `local-llm`; other models require explicit registration.
+
+See the [overall architecture diagram and request flow](README.gateway.md)
+for how these components fit together.
+
 ## Setup
 
 ```bash
