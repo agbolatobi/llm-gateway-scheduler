@@ -41,6 +41,13 @@ func NewRegisteredHandler(authenticator Authenticator, config registry.Config, c
 }
 
 func NewRegisteredHandlerWithOptions(authenticator Authenticator, gatewayConfig registry.Config, counter InputCounter, options ProxyOptions) (*RegisteredHandler, error) {
+	return NewRegisteredHandlerWithReporter(authenticator, gatewayConfig, counter, options, nil)
+}
+
+// NewRegisteredHandlerWithReporter installs a timing sink before requests begin.
+// The sink may be called concurrently and must not block request cleanup.
+// A nil sink preserves the server's normal structured logging.
+func NewRegisteredHandlerWithReporter(authenticator Authenticator, gatewayConfig registry.Config, counter InputCounter, options ProxyOptions, reporter func(TimingRecord)) (*RegisteredHandler, error) {
 	if err := options.Validate(); err != nil {
 		return nil, err
 	}
@@ -66,6 +73,9 @@ func NewRegisteredHandlerWithOptions(authenticator Authenticator, gatewayConfig 
 		execution: registry.NewExecutionProbe(),
 	}
 	handler.scheduler = scheduler.New(gatewayConfig.SchedulerConfig(), handler.capacity)
+	if reporter != nil {
+		handler.report = reporter
+	}
 	handler.afterAdmission = handler.forwardBackendResponse
 	return handler, nil
 }

@@ -130,6 +130,8 @@
               "--threads",
               "2",
               "--slots",
+              "--slot-save-path",
+              "/tmp",
               "--no-webui",
               "--n-gpu-layers",
               "0"

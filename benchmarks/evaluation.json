@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "traces": [
+    {
+      "name": "quiet",
+      "jobs": [
+        {"id": "background-1", "at_seconds": 0, "class": "background", "case": "engineering_medium_256"},
+        {"id": "interactive-1", "at_seconds": 30, "class": "interactive", "case": "engineering_short_64"},
+        {"id": "background-2", "at_seconds": 60, "class": "background", "case": "engineering_long_256"},
+        {"id": "interactive-2", "at_seconds": 90, "class": "interactive", "case": "engineering_short_64"}
+      ]
+    },
+    {
+      "name": "contended",
+      "jobs": [
+        {"id": "background-1", "at_seconds": 0, "class": "background", "case": "engineering_long_256"},
+        {"id": "background-2", "at_seconds": 0.1, "class": "background", "case": "engineering_medium_256"},
+        {"id": "interactive-1", "at_seconds": 0.2, "class": "interactive", "case": "engineering_short_64"},
+        {"id": "interactive-2", "at_seconds": 0.3, "class": "interactive", "case": "engineering_short_64"},
+        {"id": "background-3", "at_seconds": 0.4, "class": "background", "case": "engineering_medium_256"},
+        {"id": "interactive-3", "at_seconds": 0.5, "class": "interactive", "case": "engineering_short_64"}
+      ]
+    }
+  ]
+}

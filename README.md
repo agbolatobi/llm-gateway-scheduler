@@ -20,7 +20,8 @@ The main components are:
 - **Clients and model management:** browser chat and the Python CLI provide chat
   access; CLI commands validate registrations and start or stop local models.
 - **Benchmarks:** AIPerf measures inference latency and throughput, with local
-  memory measurements and optional reports. The current runner targets llama.cpp directly.
+  memory measurements and optional reports. A separate evaluator compares direct,
+  FIFO and priority access locally or inside GKE, with auditable reports.
 - **Cloud deployment:** Terraform and deployment scripts provision and manage a
   GKE deployment containing the gateway and llama.cpp, with persistent model and key storage.
 
@@ -77,7 +78,7 @@ Keep `.runtime` and its locks; remove logs only after stopping their server.
 | Browser chat, API keys and quotas | [Gateway](gateway/README.md) |
 | Streaming / routing / queues | [Streaming](gateway/README.streaming.md) · [Routing](gateway/README.routing.md) · [Scheduler](gateway/README.scheduler.md) |
 | Accounting and reusable Postman tests | [Lifecycle](gateway/README.lifecycle.md) |
-| Benchmarks and measurements | [Commands](benchmarks/README.md) · [Metrics](README.metrics.md) |
+| Benchmarks and measurements | [AIPerf](benchmarks/README.md) · [Local/GKE evaluation](benchmarks/README.evaluation.md) · [Metrics](README.metrics.md) |
 | Terraform and Kubernetes | [Deployment](infra/README.md) |
 
 Local requirements-page instructions: `README.local.md` (Git-ignored).

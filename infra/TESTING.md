@@ -42,5 +42,7 @@ can finish 64 tokens within 20 seconds and 256 tokens within the request timeout
 
 Validated locally: both Terraform roots, three mocked plan scenarios, CPU/GPU/base
 rendering, Kubernetes 1.34 schemas, Go race tests/vet, both image builds, and the
-real Qwen2.5 1.5B Q4 container tests. GCP apply, Workload Identity downloads on GKE,
-GPU execution and cluster recovery still require a real deployment.
+real Qwen2.5 1.5B Q4 container tests. The November 23, 2026 GKE session verified
+Terraform provisioning, Workload Identity model downloads and 54/54 benchmark
+requests. [Results and evidence](../benchmarks/EVAL-local-vs-gke.md). GPU execution
+and cluster recovery remain unverified.

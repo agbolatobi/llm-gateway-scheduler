@@ -1,6 +1,7 @@
 # Deploy on GCP
 
-**Implemented and locally tested; not yet deployed/verified on GCP.**
+**CPU deployment and in-Pod benchmarks verified on GKE; test resources removed afterward.**
+[Local/GKE results](../benchmarks/EVAL-local-vs-gke.md). GPU and public ingress remain unverified.
 One zonal GKE Standard cluster runs one Pod with gateway/UI + llama.cpp.
 CPU is default; GPU is optional. Nodes, disks, NAT and storage are billable.
 

@@ -1,5 +1,9 @@
 # AIPerf benchmarks
 
+For the five-metric local/GKE policy comparison, use
+[`python -m benchmarks.evaluate`](README.evaluation.md).
+[Measured local/GKE results](EVAL-local-vs-gke.md).
+
 Run from the project root with the [shared venv](../README.md#setup) active.
 
 ## Run
